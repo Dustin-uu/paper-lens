@@ -553,10 +553,24 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
 
   const cv = mkCanvas(8, 8);
   const ctx = cv.getContext('2d', { willReadFrequently: true });
-  const crop = mkCanvas(8, 8);
-  const cctx = crop.getContext('2d');
   const ink = mkCanvas(8, 8);                 // 墨迹检测用的低分辨率副本
   const ictx = ink.getContext('2d', { willReadFrequently: true });
+
+  // 图片编码是整个解析里最贵的一环（单张 WebP 约 50ms，一篇论文七八十张）。
+  // convertToBlob 本身在主线程外跑，串行 await 等于白白排队：实测 20 张
+  // 串行 1022ms、并行 359ms。所以攒够一批再一起等，让编码和下一页的渲染重叠。
+  // 不无限攒是因为每张在飞的裁图都占着一块 200dpi 画布，几十 MB 起步。
+  // 按张数和像素双重封顶：整页大图一张就有上千万像素，只数张数会把内存吃爆。
+  const ENC_BATCH = 16, ENC_PIXELS = 24e6;
+  let inflight = [], inflightPx = 0;
+  const flushEncodes = async () => {
+    const b = inflight; inflight = []; inflightPx = 0; await Promise.all(b);
+  };
+  const encodeInto = async (canvas, blk) => {
+    inflight.push(toBlob(canvas).then(b => { blk.blob = b; }));
+    inflightPx += canvas.width * canvas.height;
+    if (inflight.length >= ENC_BATCH || inflightPx >= ENC_PIXELS) await flushEncodes();
+  };
 
   const lastPage = Math.min(doc.numPages, maxPages || doc.numPages);
   for (let pno = 1; pno <= lastPage; pno++) {
@@ -566,10 +580,13 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     pageSize[pno - 1] = { w: vp1.width, h: vp1.height };
     cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
     ctx.clearRect(0, 0, cv.width, cv.height);
+    // 取文字和渲染互不依赖，同时发出去省掉每页约 40ms 的串行等待。
+    // 但字体名要等渲染完才在 commonObjs 里，所以 fontMap 仍放在后面。
+    const tcPromise = page.getTextContent();
     await page.render({ canvasContext: ctx, viewport: vp }).promise;   // 渲染同时让字体就绪
 
     const fontMap = {};
-    const tc = await page.getTextContent();
+    const tc = await tcPromise;
     for (const it of tc.items) {
       if (it.fontName && !(it.fontName in fontMap)) {
         try {
@@ -730,17 +747,21 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
           && textOnly.some(t => t.kind !== 'graphic' && overlapRatio(r, t.bbox) > 0.55)) continue;
       const w = Math.round((r[2] - r[0]) * scale), h = Math.round((r[3] - r[1]) * scale);
       if (w < 4 || h < 4) continue;
+      // 每张裁图用一块独立画布：共用一块就必须等编码完才能画下一张，等于串行。
+      const crop = mkCanvas(w, h);
       crop.width = w; crop.height = h;
-      cctx.clearRect(0, 0, w, h);
+      const cctx = crop.getContext('2d');
       cctx.drawImage(cv, Math.round(r[0] * scale), Math.round(r[1] * scale), w, h, 0, 0, w, h);
       gi++;
       const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
       const gcol = !zone ? undefined
         : (r[0] < zone.cut - 10 && r[2] > zone.cut + 10) ? undefined
         : (cx < zone.cut ? 0 : 1);
-      out.push({ kind: 'graphic', text: '', page: pno - 1, bbox: r, _col: gcol,
-                   blob: await toBlob(crop),
-                   w: Math.round(r[2] - r[0]), h: Math.round(r[3] - r[1]) });
+      const blk = { kind: 'graphic', text: '', page: pno - 1, bbox: r, _col: gcol,
+                    blob: null,
+                    w: Math.round(r[2] - r[0]), h: Math.round(r[3] - r[1]) };
+      await encodeInto(crop, blk);
+      out.push(blk);
     }
 
     // 分栏页要先读完一栏再读下一栏，不能按整页的 y 排
@@ -753,6 +774,7 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     if (onProgress) onProgress(pno, lastPage);
   }
 
+  await flushEncodes();          // 最后一批不足 ENC_BATCH，这里收尾
   const stitched = (L.stitchCrossPage !== false)
     ? await stitchCrossPage(blocks, pageSize, mkCanvas, toBlob, scale)
     : blocks;

@@ -140,14 +140,14 @@ Two requirements for the API:
 
 | | |
 |---|---|
-| Parsing | 34 s (85 pages, in-browser) |
+| Parsing | 6.1 s (85 pages, in-browser) |
 | Translation | ~150 s at 6-way concurrency |
 | Blocks | 481 — 39 headings / 200 paragraphs / 28 captions / 32 footnotes / **67 graphics** / 115 references |
 | Re-open | instant (cache hit) |
 
 The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
 
-Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 12 s, 103 paragraphs, 30 captions, 80 graphics (30 of them full-size figures), 3 cross-page stitches, 65k characters.
+Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 5.8 s, 103 paragraphs, 30 captions, 80 graphics (30 of them full-size figures), 3 cross-page stitches, 65k characters.
 
 ## How it works
 
@@ -195,6 +195,8 @@ Things that cost real time to find:
 **A 2pt threshold cost four regressions.** LaTeX indents the first line of a paragraph to x=90; the "starts at margin" cutoff was 88. Single-line paragraphs and bulleted lists — the cases where a block's min-x *is* the indent — got classified as graphics and screenshotted as images.
 
 **PNG encoding does not scale.** Cropping is cheap; `convertToBlob({type:'image/png'})` is not — it was 70 of the 80 seconds spent parsing an 85-page paper. WebP at q=0.92 is visually identical on screenshots, several times faster, and halves the output size.
+
+**Then WebP became the bottleneck too, because it was awaited one crop at a time.** `convertToBlob` does its work off the main thread, so `await`-ing each crop in turn is pure queueing: 20 crops took 1022 ms serially and 359 ms in parallel. The catch is that a single shared scratch canvas *forces* serialization — you can't draw the next crop until the current one has finished encoding. Giving each crop its own canvas and flushing in batches (capped by both count and total pixels, since one full-page figure is tens of megabytes) cut parsing roughly in half: 12.1 s → 6.1 s on the 85-page paper, 10.8 s → 5.8 s on the NVIDIA deck, with byte-identical output. Issuing `getTextContent()` before awaiting the render, rather than after, is worth another ~40 ms per page for free.
 
 **Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
 
