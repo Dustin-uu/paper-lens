@@ -252,7 +252,7 @@ function inkRuns(ink, covered, y0, y1, minHpt) {
   return out;
 }
 
-export async function scanDoc(doc, src, onProgress) {
+export async function scanDoc(doc, src, onProgress, L = {}) {
   const byPage = new Map();
   for (const b of doc.blocks) {
     if (!byPage.has(b.page)) byPage.set(b.page, []);
@@ -292,44 +292,51 @@ export async function scanDoc(doc, src, onProgress) {
                    text: txt, lines: ls, severity: Math.min(1, txt.length / 400) + 1 });
     }
 
-    // B. 一张表被劈开：相邻图块之间只隔着非散文的短行
-    const chain = [];
-    for (let i = 0; i < gs.length - 1; i++) {
-      const a = gs[i], b = gs[i + 1];
-      if (flagged.has(a.id) || flagged.has(b.id)) continue;
-      const gap = b.bbox[1] - a.bbox[3];
-      if (gap < -2 || gap > 90) continue;
-      if (hOverlap(a.bbox, b.bbox) < 0.55) continue;
-      if (Math.max(a.bbox[3] - a.bbox[1], b.bbox[3] - b.bbox[1]) < 50) continue;
-      // 上下两条独立公式本来就该分开，合并反而错。公式的标志是硬数学符号。
-      if (hardMath(joinLines(linesOf(itemsIn(e.items, a.bbox)))) >= 2
-          || hardMath(joinLines(linesOf(itemsIn(e.items, b.bbox)))) >= 2) continue;
-      // 夹在中间的文本块常常和上下两块**部分重叠**（表头行被从中间劈开，上半截
-      // 留在图里、下半截算成文字），用"完全落在缝隙里"去找会一个都找不到，
-      // 合并后那半行字就孤零零地挂在两张图中间。改成按纵向重叠判断。
-      const between = ts.filter(t => t.bbox[1] > a.bbox[1] && t.bbox[3] < b.bbox[3]
-        && Math.min(t.bbox[3], b.bbox[1] + 8) - Math.max(t.bbox[1], a.bbox[3] - 8) > 0);
-      // 中间夹着标题、成句的正文或图注，说明上下本就是两件事。尤其图注绝不能被吞掉 ——
-      // 合并意味着它变成图片的一部分，从此永远不会被翻译。
-      if (between.some(t => t.kind === 'heading' || t.kind === 'caption'
-                         || CAPTION_RE.test(t.text || '') || isProse(t.text || ''))) continue;
-      chain.push({ a, b, between });
-    }
-    // 连成一串的碎片合并成一个问题，别拆成两次提问
-    const groups = [];
-    for (const c of chain) {
-      const last = groups[groups.length - 1];
-      if (last && last.parts[last.parts.length - 1].id === c.a.id) {
-        last.parts.push(c.b); last.mid.push(...c.between);
-      } else groups.push({ parts: [c.a, c.b], mid: [...c.between] });
-    }
-    for (const g of groups) {
-      const all = [...g.parts, ...g.mid];
-      const bb = [Math.min(...all.map(x => x.bbox[0])), Math.min(...all.map(x => x.bbox[1])),
-                  Math.max(...all.map(x => x.bbox[2])), Math.max(...all.map(x => x.bbox[3]))];
-      g.parts.forEach(p => flagged.add(p.id));
-      found.push({ type: 'split', page: pno, ids: g.parts.map(p => p.id),
-                   midIds: g.mid.map(m => m.id), bbox: bb, severity: 2 + g.parts.length * 0.1 });
+    // B. 一张表被劈开。
+    // 成对判断是行不通的：NVIDIA 那张规格表在页面上是"图-文-图-文-图…"交替的十几条，
+    // 逐对看，只要任意一对被某条阈值卡住（两条都矮、间距略大、中间夹着个"Edition"），
+    // 链子就断在那里，表就继续碎着。改成从一块图出发**顺着往下吃**：
+    // 只要下一块贴得够近、横向对得上、且不是真正的正文，就并进来，直到撞上硬边界。
+    const ordered = list.filter(b => b.bbox).sort((a, b) => a.bbox[1] - b.bbox[1]);
+    // 什么算硬边界：成句的正文、图注、真正的章节标题。
+    // 注意"真正的"——表格单元格里的 Edition / TGP 也会被判成 heading，但它们字号只有
+    // 正文大小，拿它们当边界就等于永远修不好这张表。
+    const isHard = t => t.kind === 'caption' || CAPTION_RE.test(t.text || '')
+      || isProse(t.text || '')
+      || (t.kind === 'heading' && (t.size || 0) >= (L.headMinSize || 13.5));
+    const mathy = g => hardMath(joinLines(linesOf(itemsIn(e.items, g.bbox)))) >= 2;
+
+    for (let i = 0; i < ordered.length; i++) {
+      const head = ordered[i];
+      if (head.kind !== 'graphic' || flagged.has(head.id) || mathy(head)) continue;
+      const seq = [head];
+      let bb = [...head.bbox];
+      for (let j = i + 1; j < ordered.length; j++) {
+        const n = ordered[j];
+        if (n.bbox[1] - bb[3] > 60) break;                 // 离得太远，不是一回事
+        if (hOverlap(bb, n.bbox) < 0.55) break;            // 横向对不上
+        if (n.kind === 'graphic') {
+          if (flagged.has(n.id) || mathy(n)) break;        // 公式各自独立，不能并
+        } else if (isHard(n)) break;
+        seq.push(n);
+        bb = [Math.min(bb[0], n.bbox[0]), bb[1],
+              Math.max(bb[2], n.bbox[2]), Math.max(bb[3], n.bbox[3])];
+      }
+      // 末尾挂着的文字块要吐回去：它在最后一块图的下面，不属于这张图
+      while (seq.length && seq[seq.length - 1].kind !== 'graphic') seq.pop();
+      const parts = seq.filter(x => x.kind === 'graphic');
+      const mid = seq.filter(x => x.kind !== 'graphic');
+      if (parts.length < 2) continue;
+      const all = [...parts, ...mid];
+      const box = [Math.min(...all.map(x => x.bbox[0])), Math.min(...all.map(x => x.bbox[1])),
+                   Math.max(...all.map(x => x.bbox[2])), Math.max(...all.map(x => x.bbox[3]))];
+      if (box[3] - box[1] < 60) continue;                  // 太矮，多半是两条行内公式
+      parts.forEach(x => flagged.add(x.id));
+      mid.forEach(x => flagged.add(x.id));
+      found.push({ type: 'split', page: pno, ids: parts.map(x => x.id),
+                   midIds: mid.map(x => x.id), bbox: box,
+                   severity: 2 + parts.length * 0.1 });
+      i = ordered.indexOf(seq[seq.length - 1]);            // 已吃掉的不再作为新起点
     }
 
     const needInk = gs.some(x => !flagged.has(x.id) && x.h >= 45)
@@ -527,7 +534,7 @@ export async function auditDoc(doc, pdfBlob, cfg, layout, hooks = {}) {
 
   const src = await openSource(pdfBlob);
   try {
-    let all = await scanDoc(doc, src, (i, n) => onStage?.('scan', i, n));
+    let all = await scanDoc(doc, src, (i, n) => onStage?.('scan', i, n), layout);
     report.suspects = all.length;
     if (!all.length) return report;
     if (all.length > maxCalls) { report.skipped = all.length - maxCalls; all = all.slice(0, maxCalls); }
@@ -596,9 +603,9 @@ export function runAudit(doc, pdfBlob, cfg, layout, hooks) {
 }
 
 // 只跑程序筛查，不调模型、不改文档。调参和排查用。
-export function scanOnly(doc, pdfBlob, onProgress) {
+export function scanOnly(doc, pdfBlob, onProgress, layout) {
   return withUnthrottledRaf(async () => {
     const src = await openSource(pdfBlob);
-    try { return await scanDoc(doc, src, onProgress); } finally { src.close(); }
+    try { return await scanDoc(doc, src, onProgress, layout); } finally { src.close(); }
   });
 }
