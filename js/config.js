@@ -29,6 +29,8 @@ export const PRESETS = [
 export const LAYOUT = {
   autoProfile: true,  // 先采样几页统计出正文字号与页边距，再据此推导各阈值
   dpi: 200,
+  imageType: 'image/webp',  // PNG 无损编码在 85 页这个量级要 70s，WebP 快数倍且肉眼无差
+  imageQuality: 0.92,
   bodySize: [11.4, 12.6],
   abstractSize: [10.6, 11.2],
   footnoteSize: [9.4, 10.4],
@@ -39,7 +41,11 @@ export const LAYOUT = {
   abstractX0Max: 165,
   abstractMinW: 350,
   graphicGap: 12,
-  inkBridgeMax: 150,  // 两个图形碎片间隔小于此值且中间无文字有墨迹时，视为同一张图
+  inkBridgeMax: 150,
+  findFigures: true,  // 主动发现纯位图插图（它们不产生文本碎块，聚类看不见）
+  minFigureH: 40,     // 图形区最小高度，低于此值视为噪点
+  stitchCrossPage: true, // 把被分页切断的大图/长表拼回一张
+  expandFigures: true, // 大图/表按墨迹连通性补全边界，吸收被误判成文本的表头数据行     // 图形区最小高度，低于此值视为噪点  // 两个图形碎片间隔小于此值且中间无文字有墨迹时，视为同一张图
   graphicPad: 8,
   minGraphicH: 8,
   pageNoY: 690,

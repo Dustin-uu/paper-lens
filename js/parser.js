@@ -203,6 +203,9 @@ function classify(b, L, pageH) {
   const fullWidth = indented && x1 > L.bodyX1Min;
   const words = text.split(/\s+/).length;
 
+  // 目录条目（"标题........12"）。点线是可靠标志。整段译出来只是一堆点线和页码，
+  // 而且侧栏已有自动生成的目录，所以保留原文不译。
+  if (/\.{4,}/.test(text) && /\d/.test(text)) return 'ref';
   // 图题常是粗体且字号不小，必须先于标题判定，否则 "Figure1.xxx" 会被当成章节标题
   if (CAPTION_RE.test(text)) return 'caption';
   if (BOLD_RE.test(font) && size >= L.headMinSize) return 'heading';
@@ -332,6 +335,112 @@ export async function profileDocument(doc, L, maxSample = 14) {
   return out;
 }
 
+
+// 有墨迹、却没有任何文本块覆盖的连续行段 = 纯图形（位图插图、无标注的矢量图）。
+// PDF.js 的 textContent 对这类内容一无所知，只能从渲染结果里找。
+function findFigureRegions(texts, known, ink, minHpt) {
+  const { rows, minX, maxX, W, H, s } = ink;
+  const minH = Math.max(4, Math.round(minHpt * s));
+  const covered = new Uint8Array(H);
+  const mark = bb => {
+    const a = Math.max(0, Math.floor(bb[1] * s) - 1), b = Math.min(H - 1, Math.ceil(bb[3] * s) + 1);
+    for (let y = a; y <= b; y++) covered[y] = 1;
+  };
+  for (const t of texts) mark(t.bbox);
+  for (const r of known) mark(r);
+
+  const out = [];
+  let start = -1;
+  for (let y = 0; y <= H; y++) {
+    const isFig = y < H && rows[y] && !covered[y];
+    if (isFig && start < 0) start = y;
+    else if (!isFig && start >= 0) {
+      if (y - start >= minH) {
+        let x0 = W, x1 = 0;
+        for (let yy = start; yy < y; yy++) {
+          if (minX[yy] < 0) continue;
+          if (minX[yy] < x0) x0 = minX[yy];
+          if (maxX[yy] > x1) x1 = maxX[yy];
+        }
+        if (x1 > x0 + 12) out.push([Math.max(0, x0 - 2) / s, Math.max(0, start - 2) / s,
+                                    Math.min(W, x1 + 3) / s, Math.min(H, y + 2) / s]);
+      }
+      start = -1;
+    }
+  }
+  return out;
+}
+
+
+// 表格/大图里常有若干行被判成了文本块（表头、数据行），结果图被截断、文字又重复出现。
+// 按墨迹连通性把大图形区向上下扩展：遇到足够高的空白带、或遇到顶格正文才停。
+function expandRegion(r, ink, bodyLines, L, maxGrow = 260) {
+  if (r[3] - r[1] < 80) return r;               // 小公式不动
+  const { rows, minX, maxX, H, s } = ink;
+  const out = [...r];
+  const hitsBody = yPt => bodyLines.some(t => t.bbox[1] - 2 <= yPt && t.bbox[3] + 2 >= yPt);
+  const BLANK = Math.max(2, Math.round(7 * s));  // 连续空白多少像素算到边
+  const grow = Math.round(maxGrow * s);
+
+  let blank = 0;
+  for (let y = Math.ceil(r[3] * s); y < H && y - r[3] * s < grow; y++) {
+    if (hitsBody(y / s)) break;
+    if (rows[y]) { blank = 0; out[3] = y / s; if (minX[y] >= 0) { out[0] = Math.min(out[0], minX[y] / s); out[2] = Math.max(out[2], maxX[y] / s); } }
+    else if (++blank >= BLANK) break;
+  }
+  blank = 0;
+  for (let y = Math.floor(r[1] * s); y >= 0 && r[1] * s - y < grow; y--) {
+    if (hitsBody(y / s)) break;
+    if (rows[y]) { blank = 0; out[1] = y / s; if (minX[y] >= 0) { out[0] = Math.min(out[0], minX[y] / s); out[2] = Math.max(out[2], maxX[y] / s); } }
+    else if (++blank >= BLANK) break;
+  }
+  return out;
+}
+
+
+// 大图和长表格常被分页切成两半。PDF 里它们是两页上的独立对象，但对读者是一张图。
+// 判据：前页那块贴着页底、后页那块贴着页顶、两者横向范围大致重合。
+async function stitchCrossPage(blocks, pageSize, mkCanvas, toBlob, scale) {
+  const out = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const a = blocks[i], b = blocks[i + 1];
+    const pa = pageSize[a?.page], pb = pageSize[b?.page];
+    if (a?.kind === 'graphic' && b?.kind === 'graphic' && pa && pb
+        && b.page === a.page + 1 && a.blob && b.blob) {
+      // 阈值要容得下页脚区：这份白皮书的图距页底有 100pt 以上。
+      // "a 是前页最后一个块、b 是后页第一个块" 由遍历顺序天然保证，误合并风险已经很低。
+      const gapBottom = pa.h - a.bbox[3];          // 前页那块离页底多远
+      const gapTop = b.bbox[1];                    // 后页那块离页顶多远
+      const ov = Math.min(a.bbox[2], b.bbox[2]) - Math.max(a.bbox[0], b.bbox[0]);
+      const un = Math.max(a.bbox[2], b.bbox[2]) - Math.min(a.bbox[0], b.bbox[0]);
+      if (gapBottom < 135 && gapTop < 135 && un > 0 && ov / un > 0.55
+          && a.h > 50 && b.h > 50) {
+        try {
+          const [ia, ib] = await Promise.all([createImageBitmap(a.blob), createImageBitmap(b.blob)]);
+          const x0 = Math.min(a.bbox[0], b.bbox[0]);
+          const offA = Math.round((a.bbox[0] - x0) * scale);
+          const offB = Math.round((b.bbox[0] - x0) * scale);
+          const W = Math.max(offA + ia.width, offB + ib.width);
+          const H = ia.height + ib.height;
+          const c = mkCanvas(W, H);
+          const cx = c.getContext('2d');
+          cx.fillStyle = '#fff'; cx.fillRect(0, 0, W, H);
+          cx.drawImage(ia, offA, 0);
+          cx.drawImage(ib, offB, ia.height);
+          ia.close?.(); ib.close?.();
+          out.push({ ...a, blob: await toBlob(c),
+                     w: Math.round(W / scale), h: Math.round(H / scale),
+                     stitched: true });
+          i++;                                     // b 已被并入，跳过
+          continue;
+        } catch { /* 拼接失败就保持原样 */ }
+      }
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 // ---------- 主流程 ----------
 
 // PDF.js 的渲染调度走 requestAnimationFrame，而浏览器在标签页隐藏时会冻结 rAF，
@@ -368,14 +477,17 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
   }
   const scale = L.dpi / 72;
   const blocks = [];
+  const pageSize = {};
   let gi = 0;
 
   // OffscreenCanvas 不受页面可见性节流影响 —— 用户切走标签页时解析仍继续
   const OC = typeof OffscreenCanvas !== 'undefined';
   const mkCanvas = (w, h) => OC ? new OffscreenCanvas(w, h)
     : Object.assign(document.createElement('canvas'), { width: w, height: h });
-  const toBlob = (c) => OC ? c.convertToBlob({ type: 'image/png' })
-    : new Promise(r => c.toBlob(r, 'image/png'));
+  const IMG_TYPE = layout.imageType || 'image/webp';
+  const IMG_Q = layout.imageQuality ?? 0.92;
+  const toBlob = (c) => OC ? c.convertToBlob({ type: IMG_TYPE, quality: IMG_Q })
+    : new Promise(r => c.toBlob(r, IMG_TYPE, IMG_Q));
 
   const cv = mkCanvas(8, 8);
   const ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -389,6 +501,7 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     const page = await doc.getPage(pno);
     const vp1 = page.getViewport({ scale: 1 });
     const vp = page.getViewport({ scale });
+    pageSize[pno - 1] = { w: vp1.width, h: vp1.height };
     cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
     ctx.clearRect(0, 0, cv.width, cv.height);
     await page.render({ canvasContext: ctx, viewport: vp }).promise;   // 渲染同时让字体就绪
@@ -422,70 +535,110 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     // 墨迹投影：把已渲染的大图缩到 72dpi 再一次性取像素，逐行记录有没有内容。
     // 直接在 200dpi 画布上按区域取 getImageData 会慢 15 倍，实测 85 页从 5s 涨到 80s。
     // 且多数页面根本没有图，所以延迟到第一次真正需要时才计算。
-    let inkRows = null;
-    const getInkRows = () => {
-      if (inkRows) return inkRows;
-      const W = Math.ceil(vp1.width), H = Math.ceil(vp1.height);
+    let inkCache = null;
+    const INK_S = 0.5;                     // 墨迹检测分辨率（相对 72dpi）
+    const getInk = () => {
+      if (inkCache) return inkCache;
+      const W = Math.ceil(vp1.width * INK_S), H = Math.ceil(vp1.height * INK_S);
       ink.width = W; ink.height = H;
       ictx.fillStyle = '#fff';
       ictx.fillRect(0, 0, W, H);
       ictx.drawImage(cv, 0, 0, W, H);
       const d = ictx.getImageData(0, 0, W, H).data;
-      inkRows = new Uint8Array(H);
+      const rows = new Uint8Array(H);
+      const minX = new Int16Array(H).fill(-1);
+      const maxX = new Int16Array(H).fill(-1);
+      // 一次扫描同时得到：该行有无墨迹、墨迹的左右边界。后面定图形区的 x 范围直接查表，
+      // 不必再对每个区域做一次整块列投影（那样 85 页会从 11s 涨到近 60s）。
       for (let y = 0; y < H; y++) {
         const base = y * W * 4;
+        let mn = -1, mx = -1;
         for (let x = 0; x < W; x++) {
           const i = base + x * 4;
-          if (d[i] < 248 || d[i + 1] < 248 || d[i + 2] < 248) { inkRows[y] = 1; break; }
+          if (d[i] < 248 || d[i + 1] < 248 || d[i + 2] < 248) { if (mn < 0) mn = x; mx = x; }
         }
+        rows[y] = mn >= 0 ? 1 : 0; minX[y] = mn; maxX[y] = mx;
       }
-      return inkRows;
+      inkCache = { d, rows, minX, maxX, W, H, s: INK_S };
+      return inkCache;
     };
+    const getInkRows = () => getInk().rows;
 
     // 间隙里若夹着正文，说明本来就是两块内容，不桥接；否则看这段空白里有没有墨迹
     const bridge = (band) => {
       if (band[3] - band[1] <= 0) return false;
       if (texts.some(t => t.bbox[3] > band[1] + 1 && t.bbox[1] < band[3] - 1)) return false;
-      const rows = getInkRows();
-      const y0 = Math.max(0, Math.floor(band[1]));
-      const y1 = Math.min(rows.length - 1, Math.ceil(band[3]));
+      const ik = getInk();
+      const rows = ik.rows;
+      const y0 = Math.max(0, Math.floor(band[1] * ik.s));
+      const y1 = Math.min(rows.length - 1, Math.ceil(band[3] * ik.s));
       for (let y = y0; y <= y1; y++) if (rows[y]) return true;
       return false;
     };
 
-    for (const r0 of mergeGraphics(gRects, L, vp1.width, vp1.height, bridge)) {
+    let regions = mergeGraphics(gRects, L, vp1.width, vp1.height, bridge);
+    // 纯位图/无标注矢量图不会产生任何文本碎块，聚类看不见它们，得靠墨迹主动找
+    if (L.findFigures !== false) {
+      const extra = findFigureRegions(texts, regions, getInk(), L.minFigureH || 40);
+      regions = regions.concat(extra);
+      regions.sort((a, b) => a[1] - b[1]);
+    }
+
+    // 只有顶格的正文能作为图形区的边界；表头、数据行这些是可以被吸收的
+    const bodyLines = texts.filter(t => (t.kind === 'para' || t.kind === 'note')
+                                     && t.bbox[0] < L.bodyX0Max);
+    if (L.expandFigures !== false) {
+      regions = regions.map(r => expandRegion(r, getInk(), bodyLines, L));
+    }
+
+    // 被图形区吞掉的文本块要从正文里摘掉，否则表格内容会在译文里重复一遍
+    const inside = new Set();
+    for (const r of regions) {
+      if (r[3] - r[1] < 80) continue;
+      texts.forEach((t, i) => {
+        if (t.bbox[1] >= r[1] - 2 && t.bbox[3] <= r[3] + 2
+            && t.bbox[0] >= r[0] - 8 && t.bbox[2] <= r[2] + 8) inside.add(i);
+      });
+    }
+    const out = texts.filter((_, i) => !inside.has(i));
+    const textOnly = out.slice();
+
+    for (const r0 of regions) {
       // 外扩的 padding 会吃进相邻正文行，截出来就是"图 + 半行被裁的字"。这里按上下
       // 最近的文本块回缩边界。
       const r = [...r0];
-      for (const t of texts) {
+      for (const t of textOnly) {
         if (t.bbox[1] >= r0[3] - 1 && t.bbox[1] < r[3]) r[3] = t.bbox[1] - 1;
         if (t.bbox[3] <= r0[1] + 1 && t.bbox[3] > r[1]) r[1] = t.bbox[3] + 1;
       }
       if (r[3] - r[1] < L.minGraphicH) continue;
       // 与正文块重叠度过高 => 会把正文重复截一遍
-      if (texts.some(t => overlapRatio(t.bbox, r) > 0.6)) continue;
+      if (textOnly.some(t => overlapRatio(t.bbox, r) > 0.6)) continue;
       // 只丢弃"矮于一行且落在段落内"的碎片（上下标）。原来按重叠比例一刀切，
       // 会把夹在两段之间的独立公式整个误杀，表现为公式凭空消失。
       if ((r[3] - r[1]) < 30
-          && texts.some(t => t.kind !== 'graphic' && overlapRatio(r, t.bbox) > 0.55)) continue;
+          && textOnly.some(t => t.kind !== 'graphic' && overlapRatio(r, t.bbox) > 0.55)) continue;
       const w = Math.round((r[2] - r[0]) * scale), h = Math.round((r[3] - r[1]) * scale);
       if (w < 4 || h < 4) continue;
       crop.width = w; crop.height = h;
       cctx.clearRect(0, 0, w, h);
       cctx.drawImage(cv, Math.round(r[0] * scale), Math.round(r[1] * scale), w, h, 0, 0, w, h);
       gi++;
-      texts.push({ kind: 'graphic', text: '', page: pno - 1, bbox: r,
+      out.push({ kind: 'graphic', text: '', page: pno - 1, bbox: r,
                    blob: await toBlob(crop),
                    w: Math.round(r[2] - r[0]), h: Math.round(r[3] - r[1]) });
     }
 
-    texts.sort((a, b) => Math.round(a.bbox[1] / 3) - Math.round(b.bbox[1] / 3) || a.bbox[0] - b.bbox[0]);
-    blocks.push(...texts);
+    out.sort((a, b) => Math.round(a.bbox[1] / 3) - Math.round(b.bbox[1] / 3) || a.bbox[0] - b.bbox[0]);
+    blocks.push(...out);
     page.cleanup();
     if (onProgress) onProgress(pno, lastPage);
   }
 
-  return finalize(blocks);
+  const stitched = (L.stitchCrossPage !== false)
+    ? await stitchCrossPage(blocks, pageSize, mkCanvas, toBlob, scale)
+    : blocks;
+  return finalize(stitched);
 }
 
 function finalize(blocks) {

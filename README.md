@@ -84,6 +84,13 @@ Any OpenAI-compatible endpoint. Presets for DeepSeek, OpenAI, Zhipu GLM, Moonsho
 
 Layout parameters are exposed too, for when a PDF's typography doesn't match the defaults.
 
+### Handles more than clean LaTeX
+
+- **Bitmap figures are found by looking at the rendered pixels.** A photo or an unlabelled diagram produces no text fragments at all, so clustering can't see it. Rows that have ink but no text block over them are cropped as figures.
+- **Figures split across a page break are stitched back together.** If one block hugs the bottom of a page and the next hugs the top of the next page with matching horizontal extent, they're joined into a single image.
+- **Tables keep their header rows.** Rows that got classified as text are absorbed back into the table region by following ink connectivity.
+- **Running headers and footers are dropped**, and table-of-contents entries (`Introduction.........12`) are left untranslated — translating a wall of leader dots and page numbers helps nobody.
+
 ### Also
 
 - **Four view modes** — translation-first, side-by-side, translation-only, original-only
@@ -115,14 +122,14 @@ Two requirements for the API:
 
 | | |
 |---|---|
-| Parsing | 11.4 s (85 pages, in-browser) |
+| Parsing | 34 s (85 pages, in-browser) |
 | Translation | ~150 s at 6-way concurrency |
 | Blocks | 481 — 39 headings / 200 paragraphs / 28 captions / 32 footnotes / **67 graphics** / 115 references |
 | Re-open | instant (cache hit) |
 
 The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
 
-Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space). Auto-profiling handles it without touching a single setting: 103 paragraphs, 33 captions, 54 graphics, 68k characters.
+Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 12 s, 103 paragraphs, 30 captions, 80 graphics (30 of them full-size figures), 3 cross-page stitches, 65k characters.
 
 ## How it works
 
@@ -166,6 +173,8 @@ Things that cost real time to find:
 **Running headers poison block segmentation.** Academic papers don't have them; commercial documents do. A repeated header line merges into the first paragraph, the block's attributes go incoherent, and the whole thing gets screenshotted. Detect them during profiling — normalize page numbers to `#`, and blacklist edge lines that repeat across sampled pages — then drop them at the *line* level, before blocks are formed.
 
 **A 2pt threshold cost four regressions.** LaTeX indents the first line of a paragraph to x=90; the "starts at margin" cutoff was 88. Single-line paragraphs and bulleted lists — the cases where a block's min-x *is* the indent — got classified as graphics and screenshotted as images.
+
+**PNG encoding does not scale.** Cropping is cheap; `convertToBlob({type:'image/png'})` is not — it was 70 of the 80 seconds spent parsing an 85-page paper. WebP at q=0.92 is visually identical on screenshots, several times faster, and halves the output size.
 
 **Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
 
