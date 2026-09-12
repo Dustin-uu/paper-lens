@@ -182,7 +182,7 @@ Things that cost real time to find:
 
 ## Limitations
 
-- **Two-column PDFs are not supported.** Blocks sort by y-coordinate, so columns interleave. Fixing it means splitting by x first.
+- **Two-column PDFs are not supported by default.** Blocks sort by y-coordinate, so columns interleave — on a page with a sidebar you'll see the two columns spliced line by line. There *is* a detector (`detectColumnZone`, enable with `detectColumns: true`) and it fixes such pages, but it also mistakes the gap between table columns for a column gutter: on one academic paper it misfired on 22 pages and inflated the translatable text by 19%. Off by default until it can tell a table apart from a gutter.
 - **Scanned PDFs need OCR first** — this reads the text layer, it does not do OCR.
 - Auto-profiling assumes a single dominant body style. Documents that mix wildly different layouts across sections may still need a manual pass through the layout settings.
 - One known cosmetic issue: an inline fraction inside a footnote can get cropped as a wide thin strip.

@@ -112,6 +112,67 @@ function groupLines(spans, tol) {
   return lines;
 }
 
+
+// 分栏检测。按 y 聚行的前提是单栏；一旦页面分栏，左右两栏同一水平位置的行会被
+// 当成一行，正文就此左右交错。
+// 难点是混合布局：一页里往往上半是通栏段落、下半才分栏，对整页做 x 投影时通栏段落
+// 会把栏间空隙填满。所以改为按 y 分带逐带找空隙，再取众数，并只在真正分栏的那段
+// y 区间里分栏。
+function findGapCenter(items, pageW, minGap) {
+  const cover = new Uint16Array(Math.ceil(pageW) + 2);
+  for (const it of items) {
+    const a = Math.max(0, Math.floor(it.x0)), b = Math.min(cover.length - 1, Math.ceil(it.x1));
+    for (let x = a; x <= b; x++) cover[x]++;
+  }
+  let best = null, bestW = 0, start = -1;
+  for (let x = 0; x < cover.length; x++) {
+    if (!cover[x]) { if (start < 0) start = x; }
+    else {
+      if (start >= 0 && x - start >= minGap && start > pageW * 0.25 && x < pageW * 0.75
+          && x - start > bestW) { bestW = x - start; best = (start + x) / 2; }
+      start = -1;
+    }
+  }
+  return best;
+}
+
+function detectColumnZone(spans, pageW, pageH, minGap) {
+  if (spans.length < 40) return null;
+  const BAND = 36;
+  const n = Math.ceil(pageH / BAND);
+  const perBand = [];
+  for (let i = 0; i < n; i++) {
+    const inBand = spans.filter(sp => sp.yBase >= i * BAND && sp.yBase < (i + 1) * BAND);
+    perBand.push(inBand.length >= 4 ? findGapCenter(inBand, pageW, minGap) : null);
+  }
+  // 取出现最多的切分位置（±16pt 视为同一处）
+  const groups = [];
+  for (const c of perBand) {
+    if (c == null) continue;
+    const g = groups.find(x => Math.abs(x.c - c) < 16);
+    if (g) { g.n++; g.c = (g.c * (g.n - 1) + c) / g.n; } else groups.push({ c, n: 1 });
+  }
+  const top = groups.sort((a, b) => b.n - a.n)[0];
+  if (!top || top.n < 3) return null;              // 至少连续几带都分栏才算数
+  let y0 = Infinity, y1 = -Infinity;
+  perBand.forEach((c, i) => {
+    if (c != null && Math.abs(c - top.c) < 16) {
+      y0 = Math.min(y0, i * BAND); y1 = Math.max(y1, (i + 1) * BAND);
+    }
+  });
+  // 真正的分栏，绝大多数行都只落在某一侧；如果多数行横跨分界线，那条"空隙"
+  // 其实是表格列缝或公式间距，按分栏处理反而会把正文顺序打乱。
+  const M = 10;
+  const crosses = sp => sp.x0 < top.c - M && sp.x1 > top.c + M;
+  const cross = spans.filter(crosses).length;
+  const left = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 < top.c).length;
+  const right = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 >= top.c).length;
+  const total = spans.length;
+  if (cross > total * 0.45) return null;
+  if (left < total * 0.15 || right < total * 0.15) return null;
+  return { cut: top.c, y0, y1 };
+}
+
 function groupBlocks(lines, L) {
   const blocks = [];
   for (const ln of lines) {
@@ -226,6 +287,7 @@ function classify(b, L, pageH) {
         && b.lines.length >= 4 && !bad) return 'para';
   }
   if (fullWidth && size >= L.footnoteSize[0] && size <= L.footnoteSize[1]) return 'note';
+
   return 'graphic';
 }
 
@@ -518,8 +580,47 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     }
 
     const spans = toSpans(tc, vp1, fontMap);
-    const lines = groupLines(spans, L.lineTol).filter(l => !isHeaderFooter(l, L, vp1.height));
-    const raw = groupBlocks(lines, L);
+    // 分栏必须在聚行之前判定：一旦按整页 y 聚行，左右两栏的行就被并成一行了
+    const zone = L.detectColumns === false ? null
+      : detectColumnZone(spans, vp1.width, vp1.height, L.minColumnGap || 6);
+    let lines;
+    if (zone) {
+      // 分栏区之外（通栏部分）仍按整页聚行，区内左右两栏各自聚行
+      const groupsOf = [];
+      // 用"是否横跨分界线"来分，而不是用检测到 gap 的 y 范围 —— 后者往往只覆盖
+      // 部分带，栏内其余段落会漏回通栏，又被整页聚行搅在一起。
+      // 通栏的行必然横跨分界线，栏内的行必然只在一侧。
+      const M = 10;
+      const outside = spans.filter(sp => sp.x0 < zone.cut - M && sp.x1 > zone.cut + M);
+      const inLeft = spans.filter(sp => !(sp.x0 < zone.cut - M && sp.x1 > zone.cut + M)
+                                     && (sp.x0 + sp.x1) / 2 < zone.cut);
+      const inRight = spans.filter(sp => !(sp.x0 < zone.cut - M && sp.x1 > zone.cut + M)
+                                      && (sp.x0 + sp.x1) / 2 >= zone.cut);
+      groupsOf.push([outside, undefined], [inLeft, 0], [inRight, 1]);
+      lines = [];
+      for (const [sp, col] of groupsOf) {
+        if (!sp.length) continue;
+        const ls = groupLines(sp, L.lineTol);
+        ls.forEach(l => { l._col = col; });
+        lines.push(...ls);
+      }
+    } else {
+      lines = groupLines(spans, L.lineTol);
+    }
+    lines = lines.filter(l => !isHeaderFooter(l, L, vp1.height));
+    let raw;
+    if (zone) {
+      raw = [];
+      for (const col of [undefined, 0, 1]) {
+        const ls = lines.filter(l => l._col === col);
+        if (!ls.length) continue;
+        const blocks = groupBlocks(ls, L);
+        blocks.forEach(b => { b._col = col; });
+        raw.push(...blocks);
+      }
+    } else {
+      raw = groupBlocks(lines, L);
+    }
 
     const texts = [], gRects = [];
     for (const b0 of raw) {
@@ -528,7 +629,8 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
         if (!kind) continue;
         const bbox = [b.x0, b.yTop, b.x1, b.yBot];
         if (kind === 'graphic') gRects.push(bbox);
-        else texts.push({ kind, text: b.text, size: b.size, font: b.font, bbox, page: pno - 1 });
+        else texts.push({ kind, text: b.text, size: b.size, font: b.font, bbox, page: pno - 1,
+                          _col: b0._col });
       }
     }
 
@@ -632,12 +734,20 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
       cctx.clearRect(0, 0, w, h);
       cctx.drawImage(cv, Math.round(r[0] * scale), Math.round(r[1] * scale), w, h, 0, 0, w, h);
       gi++;
-      out.push({ kind: 'graphic', text: '', page: pno - 1, bbox: r,
+      const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+      const gcol = !zone ? undefined
+        : (r[0] < zone.cut - 10 && r[2] > zone.cut + 10) ? undefined
+        : (cx < zone.cut ? 0 : 1);
+      out.push({ kind: 'graphic', text: '', page: pno - 1, bbox: r, _col: gcol,
                    blob: await toBlob(crop),
                    w: Math.round(r[2] - r[0]), h: Math.round(r[3] - r[1]) });
     }
 
-    out.sort((a, b) => Math.round(a.bbox[1] / 3) - Math.round(b.bbox[1] / 3) || a.bbox[0] - b.bbox[0]);
+    // 分栏页要先读完一栏再读下一栏，不能按整页的 y 排
+    // 通栏内容按原位置排；分栏区内先读完左栏再读右栏
+    const ck = v => v === undefined ? -1 : v;
+    out.sort((a, b) => (ck(a._col) - ck(b._col))
+      || Math.round(a.bbox[1] / 3) - Math.round(b.bbox[1] / 3) || a.bbox[0] - b.bbox[0]);
     blocks.push(...out);
     page.cleanup();
     if (onProgress) onProgress(pno, lastPage);
