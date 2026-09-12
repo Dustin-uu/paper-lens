@@ -95,7 +95,7 @@ High(H)40.020.61.9443.620.42.14225.819.31.34...
 ## 快速开始
 
 ```bash
-git clone https://github.com/OWNER/paper-lens.git
+git clone https://github.com/Dustin-uu/paper-lens.git
 cd paper-lens
 python3 -m http.server 8080
 ```

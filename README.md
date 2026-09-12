@@ -95,7 +95,7 @@ Layout parameters are exposed too, for when a PDF's typography doesn't match the
 ## Quick start
 
 ```bash
-git clone https://github.com/OWNER/paper-lens.git
+git clone https://github.com/Dustin-uu/paper-lens.git
 cd paper-lens
 python3 -m http.server 8080
 ```
