@@ -133,6 +133,12 @@
         <label>目标语言</label>
         <input id="fLang" placeholder="简体中文">
       </div>
+      <div class="fld">
+        <label class="chk"><input type="checkbox" id="fAudit"> 翻译完让 AI 复核版面</label>
+        <div class="hint">程序先挑出可疑的图（正文被误截成图、一张表被拆成两半、图被截断、有图注却没有图），
+        再逐个交给读图模型判断，确认有问题才改。每篇最多问
+        <input id="fAuditMax" type="number" min="0" max="200" style="width:64px;display:inline-block"> 次。</div>
+      </div>
       <details class="fld" id="advBox">
         <summary>版面解析参数（换排版风格的 PDF 时才需要动）</summary>
         <div class="row" style="margin-top:12px">
@@ -172,6 +178,8 @@
     </div>
   </div>
 </div>
+
+<div id="toast"></div>
 
 <div id="lb"><img src="" alt=""></div>
 

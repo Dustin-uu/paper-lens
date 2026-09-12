@@ -91,6 +91,24 @@ Layout parameters are exposed too, for when a PDF's typography doesn't match the
 - **Tables keep their header rows.** Rows that got classified as text are absorbed back into the table region by following ink connectivity.
 - **Running headers and footers are dropped**, and table-of-contents entries (`Introduction.........12`) are left untranslated — translating a wall of leader dots and page numbers helps nobody.
 
+### The AI proofreads the layout when translation finishes
+
+<img src="docs/screenshots/11-audit.png" width="920" alt="Audit report after translation">
+
+No amount of threshold tuning catches everything. A paragraph gets cropped as an image. A table is split in half by the rows in the middle that were read as text. A figure's boundary stops a few points short. A caption has no figure. What these have in common is that **a human spots them instantly and a rule can't**.
+
+So when translation finishes, an audit pass runs: **the program filters, the model judges.**
+
+1. **The program shortlists suspects.** It pulls the original PDF text underneath every cropped region and measures stopword density, intra-line gaps and math symbols; then it uses the ink projection to see whether unclaimed strokes run right past a figure's edge. On the 85-page paper that shortlists 4 regions; on the 49-page NVIDIA deck, 26. The other hundred-plus crops never reach the model.
+2. **The model only answers multiple choice.** Each suspect is cropped and sent to a vision model with a fixed question — *is the subject of this image body text or a figure?*, *are these two halves one table or two unrelated things?* — and a fixed set of answers, returned as JSON. **It is never asked for coordinates.** Vision models routinely report boxes that are off by tens of points; cropping with those makes things worse. Every boundary is computed from ink.
+3. **Only confirmed problems get repaired.** Text is restored and queued for translation, split tables are re-cropped as one image, truncated figures grow back along their ink, missing figures are inserted.
+
+Measured on the NVIDIA whitepaper: 26 questions, 27 seconds — 13 paragraphs restored from images, 9 split figures merged, 1 truncated figure recovered, graphic blocks down from 86 to 63. On the academic paper it changed exactly one thing, which is the point: there wasn't much to fix, and the model didn't invent work.
+
+Guardrails that exist specifically to avoid making things worse: **a region containing two or more hard math glyphs is never touched** (restore `∂w⋆/∂rˆ` as text and it is gone for good); **a region where most lines have a wide internal gap is treated as a table** (the appendix "acronym / source / description" tables read exactly like prose by every word-level metric — only the column gutter separates them); **two blocks with a caption between them are never merged** (merging makes the caption part of an image, so it would never be translated again).
+
+It can be switched off in settings, and the per-document question budget is capped (default 40). Without a vision model it falls back to the single highest-confidence case and leaves the rest alone.
+
 ### Also
 
 - **Four view modes** — translation-first, side-by-side, translation-only, original-only
@@ -116,7 +134,7 @@ Open <http://localhost:8080>, click **设置** (Settings), fill in your API base
 Two requirements for the API:
 
 1. **CORS must be open.** Most official APIs are. Self-hosted gateways need `Access-Control-Allow-Origin`. The *Test connection* button tells you plainly when this is the problem.
-2. **Explaining formulas needs a vision model.** If yours can't read images, put `-` in the vision-model field and it degrades gracefully — it reasons from context and says so.
+2. **Explaining formulas and auditing the layout need a vision model.** If yours can't read images, put `-` in the vision-model field and both degrade gracefully — formula explanations reason from context and say so, and the audit falls back to its one text-only check.
 
 ## Measured on an 85-page paper
 
@@ -137,6 +155,7 @@ Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely d
 PDF ──► parser.js ──► block sequence + cropped images
                           │
                           ├─► translator.js ──► batched / concurrent / cached
+                          ├─► audit.js      ──► shortlist suspects, ask the model, repair
                           ├─► reader.js     ──► render, TOC, highlight, click-to-ask
                           └─► ai.js         ──► context assembly, streamed answers
 ```
@@ -148,7 +167,8 @@ PDF ──► parser.js ──► block sequence + cropped images
 | `js/llm.js` | OpenAI-format client with streaming |
 | `js/ai.js` | Conversation state, context assembly, formula prompts |
 | `js/reader.js` | Rendering, TOC, selection highlighting |
-| `js/store.js` | IndexedDB — library + translation cache |
+| `js/audit.js` | Post-translation layout audit — suspect filter, model judgement, repairs |
+| `js/store.js` | IndexedDB — library, translation cache, original PDF |
 | `js/main.js` | State machine and interactions |
 | `js/config.js` | Defaults, provider presets, layout params, glossary |
 
@@ -179,6 +199,10 @@ Things that cost real time to find:
 **Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
 
 **Never set `white-space: normal` on KaTeX.** Its layout is absolutely positioned; allow wrapping and the right half of the equation vanishes. Scale oversized formulas with `transform` instead.
+
+**Asking a model for coordinates does not work.** The first attempt at the audit sent whole pages to a vision model and asked where a figure's real boundary was. The boxes came back tens of points off, and cropping to them made things worse. It only became reliable once the model was restricted to **judgement questions** — *body text or figure?*, *one table or two?* — with every coordinate computed from the ink projection. The model decides *what*; the program decides *where*.
+
+**Stopword density cannot tell an appendix table from prose.** A three-column "Abnormal accruals — Xie (2001) — Abnormal Accruals" table has all the *of / and / to* you could want; letter ratio, sentence punctuation and math-symbol counts all say prose. The one signal that works is the **intra-line gap**: a column gutter is tens of points, a word space is a few. Adding that check took the 85-page paper from 24 suspects to 4.
 
 ## Limitations
 

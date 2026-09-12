@@ -264,8 +264,22 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
 #lb.on{display:grid}
 #lb img{max-width:96vw;max-height:92vh;background:#fff;border-radius:5px;padding:14px}
 
+/* 自检结果提示 */
+#toast{position:fixed;right:20px;bottom:20px;z-index:98;max-width:400px;display:none;
+  background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+  box-shadow:0 10px 34px rgba(0,0,0,.14);font-size:13.5px;line-height:1.6;color:var(--fg-soft)}
+#toast.on{display:block}
+#toast .tmsg{color:var(--fg);font-weight:600;margin-bottom:2px}
+#toast ul{margin:8px 0 0;padding-left:18px}
+#toast li{margin:3px 0}
+#toast li.more{list-style:none;margin-left:-14px;color:var(--en)}
+#toast .tx{margin-top:10px;border:1px solid var(--line);background:var(--panel);color:var(--fg-soft);
+  border-radius:7px;padding:4px 12px;cursor:pointer;font-size:12.5px}
+.fld label.chk{display:flex;align-items:center;gap:8px;cursor:pointer}
+.fld label.chk input{width:auto;margin:0}
+
 @media print{
-  #bar,#toc,#prog,#lb,#ai,.sel-ask,.ask-hint{display:none!important}
+  #bar,#toc,#prog,#lb,#ai,#toast,.sel-ask,.ask-hint{display:none!important}
   main{margin:0;padding:0}.wrap{width:100%}
   .blk,figure{break-inside:avoid}body{background:#fff}
 }

@@ -508,7 +508,7 @@ async function stitchCrossPage(blocks, pageSize, mkCanvas, toBlob, scale) {
 // PDF.js 的渲染调度走 requestAnimationFrame，而浏览器在标签页隐藏时会冻结 rAF，
 // 导致切走标签页解析就卡死（OffscreenCanvas 也绕不过）。离屏渲染并不需要跟屏幕刷新
 // 同步，解析期间换成 setTimeout：既能后台继续跑，也不再被 60fps 限速。
-async function withUnthrottledRaf(fn) {
+export async function withUnthrottledRaf(fn) {
   const orig = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 0);
   try { return await fn(); }

@@ -12,6 +12,8 @@ export const DEFAULTS = {
   targetLang: '简体中文',
   timeoutMs: 180000,
   retry: 3,
+  autoAudit: true,          // 翻译完让 AI 复核一遍版面（见 audit.js）
+  auditMaxCalls: 40,        // 单篇最多问多少次，免得长文档把额度问光
 };
 
 // 常见服务商预设，设置面板里一键填入

@@ -6,6 +6,7 @@ import { testConnection, listModels, testVision } from './llm.js';
 import * as store from './store.js';
 import { Reader, buildToc } from './reader.js';
 import { Conversation, contextAround, sectionOf, PRESET_QUESTIONS } from './ai.js';
+import { runAudit, auditSummary } from './audit.js';
 
 const $ = s => document.querySelector(s);
 const D = document.documentElement;
@@ -51,6 +52,8 @@ function fillSettings() {
   $('#fConc').value = cfg.concurrency;
   $('#fBatch').value = cfg.batchChars;
   $('#fLang').value = cfg.targetLang;
+  $('#fAudit').checked = cfg.autoAudit !== false;
+  $('#fAuditMax').value = cfg.auditMaxCalls ?? DEFAULTS.auditMaxCalls;
   store.estimateUsage().then(u => {
     store.cacheSize().then(n => {
       $('#usage').textContent = u
@@ -89,6 +92,8 @@ function readSettings() {
     concurrency: Math.max(1, +$('#fConc').value || DEFAULTS.concurrency),
     batchChars: Math.max(500, +$('#fBatch').value || DEFAULTS.batchChars),
     targetLang: $('#fLang').value.trim() || '简体中文',
+    autoAudit: $('#fAudit').checked,
+    auditMaxCalls: Math.max(0, +$('#fAuditMax').value || DEFAULTS.auditMaxCalls),
   };
 }
 const chips = $('#presets');
@@ -202,7 +207,7 @@ async function handleFile(file) {
 
   if (!cfg.apiKey || !cfg.baseUrl) {
     alert('尚未配置模型接口，先只生成原文版面。配置后可在文档库里重新打开继续翻译。');
-    await store.saveDoc(doc); openDoc(doc); return;
+    await store.saveDoc(doc); await store.savePdf(doc.id, file); openDoc(doc); return;
   }
 
   const cache = store.makeCache(cfg.model);
@@ -219,9 +224,75 @@ async function handleFile(file) {
   // 译出标题
   const th = blocks.find(b => b.kind === 'heading' && typeof b.zh === 'string' && b.zh.trim());
   if (th) doc.title = th.zh.replace(/\*+$/, '');
+
+  await store.savePdf(doc.id, file);       // 留底，供自检时重新截图
+  const rep = stopFlag ? null : await audit(file);
+
   setWork('正在保存…', '', 1);
   await store.saveDoc(doc);
   openDoc(doc);
+  if (rep) toast(auditSummary(rep), rep.fixed);
+}
+
+// 翻译完自动让 AI 复核一遍版面：每张图是不是截对了，有没有正文被当成图。
+async function audit(pdfBlob) {
+  if (cfg.autoAudit === false || !cfg.apiKey || !pdfBlob) return null;
+  setWork('AI 正在复核版面…', '正在挑出可疑的图', 0);
+  let rep = null;
+  try {
+    rep = await runAudit(doc, pdfBlob, cfg, loadLayout(), {
+      onStage: (st, i, n) => setWork('AI 正在复核版面…',
+        st === 'scan' ? `扫描第 ${i} / ${n} 页` : `核查第 ${i} / ${n} 处`,
+        st === 'scan' ? (i / n) * 0.3 : 0.3 + (i / n) * 0.7),
+      shouldStop: () => stopFlag,
+    });
+  } catch (e) {
+    console.warn('[paper-lens] 版面自检失败：', e);
+    return null;
+  }
+  doc.audited = true;
+  // 还原出来的正文是新的待译内容，顺手补译掉
+  if (rep.fixed.some(f => f.retext) && countPending(doc.blocks)) {
+    setWork('正在补译还原出来的正文…', '', 1);
+    await translate(doc.blocks, cfg, store.makeCache(cfg.model), () => {}, () => stopFlag);
+  }
+  return rep;
+}
+
+let toastTimer = null;
+function toast(msg, details) {
+  if (!msg) return;
+  const el = $('#toast');
+  el.innerHTML = '';
+  const line = document.createElement('div');
+  line.className = 'tmsg';
+  line.textContent = msg;
+  el.appendChild(line);
+  if (details?.length) {
+    const ul = document.createElement('ul');
+    // 一次修十几处很常见，全列出来会糊满半屏。只给前几条，其余折成一行。
+    details.slice(0, 6).forEach(d => {
+      const li = document.createElement('li');
+      li.textContent = d.note + (d.reason ? `（${d.reason}）` : '');
+      ul.appendChild(li);
+    });
+    if (details.length > 6) {
+      const li = document.createElement('li');
+      li.className = 'more';
+      li.textContent = `另有 ${details.length - 6} 处，详见控制台`;
+      ul.appendChild(li);
+    }
+    el.appendChild(ul);
+    if (details.length > 6) console.info('[paper-lens] 版面自检修正明细：', details.map(d => d.note));
+  }
+  const x = document.createElement('button');
+  x.className = 'tx';
+  x.textContent = '知道了';
+  x.onclick = () => el.classList.remove('on');
+  el.appendChild(x);
+  el.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('on'), 14000);
 }
 
 // ---------- 阅读 ----------
