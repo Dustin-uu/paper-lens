@@ -194,8 +194,8 @@ async function handleFile(file) {
   setWork('正在解析版面…', file.name, 0);
   let blocks;
   try {
-    blocks = await parsePdf(file, loadLayout(), (p, n) =>
-      setWork('正在解析版面…', `第 ${p} / ${n} 页`, (p / n) * 0.4));
+    blocks = await parsePdf(file, loadLayout(), (p, n, tail) =>
+      setWork('正在解析版面…', tail || `第 ${p} / ${n} 页`, (p / n) * 0.4));
   } catch (e) {
     alert('解析失败：' + (e.message || e)); showHome(); return;
   }
@@ -212,7 +212,11 @@ async function handleFile(file) {
 
   const cache = store.makeCache(cfg.model);
   const t0 = performance.now();
-  await translate(blocks, cfg, cache, ({ done, total, cached, failed }) => {
+  await translate(blocks, cfg, cache, ({ phase, done, total, cached, failed }) => {
+    if (phase === 'cache') {
+      setWork('正在查翻译缓存…', `${done} / ${total} 块`, 0.4);
+      return;
+    }
     const el = performance.now() - t0;
     const pct = total ? done / total : 1;
     const eta = pct > 0.02 ? ((el / pct - el) / 1000).toFixed(0) + 's' : '—';
@@ -324,8 +328,11 @@ async function resumeTranslate() {
   stopFlag = false;
   D.dataset.screen = 'work';
   const cache = store.makeCache(cfg.model);
-  await translate(doc.blocks, cfg, cache, ({ done, total, failed }) =>
-    setWork('正在补译…', `${done}/${total} 批${failed ? ` · 失败 ${failed}` : ''}`, total ? done / total : 1),
+  await translate(doc.blocks, cfg, cache, ({ phase, done, total, failed }) =>
+    setWork(phase === 'cache' ? '正在查翻译缓存…' : '正在补译…',
+      phase === 'cache' ? `${done} / ${total} 块`
+        : `${done}/${total} 批${failed ? ` · 失败 ${failed}` : ''}`,
+      total ? done / total : 1),
     () => stopFlag);
   await store.saveDoc(doc);
   openDoc(doc);

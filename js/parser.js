@@ -774,6 +774,8 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     if (onProgress) onProgress(pno, lastPage);
   }
 
+  // 收尾阶段也要报进度：否则最后一页跑完到翻译开始之间界面一动不动，看着像卡死
+  onProgress?.(lastPage, lastPage, '正在合并跨页图…');
   await flushEncodes();          // 最后一批不足 ENC_BATCH，这里收尾
   const stitched = (L.stitchCrossPage !== false)
     ? await stitchCrossPage(blocks, pageSize, mkCanvas, toBlob, scale)

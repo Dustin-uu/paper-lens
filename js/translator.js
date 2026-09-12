@@ -83,7 +83,11 @@ async function doBatch(cfg, batch) {
 export async function translate(blocks, cfg, cache, onProgress, shouldStop) {
   const todo = [];
   let cached = 0;
+  // 查缓存要对每一块做一次 IndexedDB 读，几百块下来是实打实的一段时间。
+  // 这段以前完全不报进度，界面停在上一个阶段的文案上，看着就像卡死了。
+  let i = 0;
   for (const b of blocks) {
+    if (++i % 25 === 0) onProgress?.({ phase: 'cache', done: i, total: blocks.length });
     if (!TRANSLATE_KINDS.has(b.kind) || !b.text.trim()) continue;
     if (b.zh) { cached++; continue; }
     const hit = cache ? await cache.get(b.text) : null;
