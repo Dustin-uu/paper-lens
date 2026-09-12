@@ -624,7 +624,15 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     } else {
       lines = groupLines(spans, L.lineTol);
     }
-    lines = lines.filter(l => !isHeaderFooter(l, L, vp1.height));
+    // 页眉页脚要剔除，但不能就此当它们不存在：它们的墨迹还留在页面上，
+    // 一旦没有任何文本块认领，findFigureRegions 就会把这行字当成"无标注插图"截成图片。
+    // 所以剔除的同时把位置记下来占位。
+    const hfBoxes = [];
+    lines = lines.filter(l => {
+      if (!isHeaderFooter(l, L, vp1.height)) return true;
+      hfBoxes.push({ kind: 'skip', bbox: [l.x0, l.yTop, l.x1, l.yBot] });
+      return false;
+    });
     let raw;
     if (zone) {
       raw = [];
@@ -645,6 +653,17 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
         const kind = classify(b, L, vp1.height);
         if (!kind) continue;
         const bbox = [b.x0, b.yTop, b.x1, b.yBot];
+        // 分节页眉（"Introduction" / "DLSS 4" / "APPENDIX A: …"）每隔几页就换一次内容，
+        // 跨页比对的黑名单按定义抓不住它们；而一行右对齐的小字又匹配不上任何正文规则，
+        // 最后一路落进 graphic，被当成插图截图出来 —— 正文里于是凭空多出一张张
+        // 只写着章节名的白卡片。实测这份白皮书 86 张图里有 16 张是这么来的。
+        // 判据只看形状，不看内容：页边带内、单行、短、不宽。真正的插图不长这样。
+        if (kind === 'graphic' && b.text && b.lines.length === 1 && b.text.length <= 60
+            && (b.x1 - b.x0) < vp1.width * 0.6
+            && (b.yTop < vp1.height * 0.09 || b.yBot > vp1.height * 0.91)) {
+          hfBoxes.push({ kind: 'skip', bbox });
+          continue;
+        }
         if (kind === 'graphic') gRects.push(bbox);
         else texts.push({ kind, text: b.text, size: b.size, font: b.font, bbox, page: pno - 1,
                           _col: b0._col });
@@ -698,15 +717,16 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     let regions = mergeGraphics(gRects, L, vp1.width, vp1.height, bridge);
     // 纯位图/无标注矢量图不会产生任何文本碎块，聚类看不见它们，得靠墨迹主动找
     if (L.findFigures !== false) {
-      const extra = findFigureRegions(texts, regions, getInk(), L.minFigureH || 40);
+      const extra = findFigureRegions(texts.concat(hfBoxes), regions, getInk(), L.minFigureH || 40);
       regions = regions.concat(extra);
       regions.sort((a, b) => a[1] - b[1]);
     }
 
     // 只有顶格的正文能作为图形区的边界；表头、数据行这些是可以被吸收的
+    // 页眉页脚同样是硬边界：图不该越过它们长上去
     const bodyLines = texts.filter(t =>
       t.kind === 'caption' || t.kind === 'heading'
-      || ((t.kind === 'para' || t.kind === 'note') && t.bbox[0] < L.bodyX0Max));
+      || ((t.kind === 'para' || t.kind === 'note') && t.bbox[0] < L.bodyX0Max)).concat(hfBoxes);
     if (L.expandFigures !== false) {
       regions = regions.map(r => expandRegion(r, getInk(), bodyLines, L));
     }

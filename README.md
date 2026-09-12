@@ -99,11 +99,11 @@ No amount of threshold tuning catches everything. A paragraph gets cropped as an
 
 So when translation finishes, an audit pass runs: **the program filters, the model judges.**
 
-1. **The program shortlists suspects.** It pulls the original PDF text underneath every cropped region and measures stopword density, intra-line gaps and math symbols; then it uses the ink projection to see whether unclaimed strokes run right past a figure's edge. On the 85-page paper that shortlists 4 regions; on the 49-page NVIDIA deck, 26. The other hundred-plus crops never reach the model.
+1. **The program shortlists suspects.** It pulls the original PDF text underneath every cropped region and measures stopword density, intra-line gaps and math symbols; then it uses the ink projection to see whether unclaimed strokes run right past a figure's edge. On the 85-page paper that shortlists 4 regions; on the 49-page NVIDIA deck, 23. The other hundred-plus crops never reach the model.
 2. **The model only answers multiple choice.** Each suspect is cropped and sent to a vision model with a fixed question — *is the subject of this image body text or a figure?*, *are these two halves one table or two unrelated things?* — and a fixed set of answers, returned as JSON. **It is never asked for coordinates.** Vision models routinely report boxes that are off by tens of points; cropping with those makes things worse. Every boundary is computed from ink.
 3. **Only confirmed problems get repaired.** Text is restored and queued for translation, split tables are re-cropped as one image, truncated figures grow back along their ink, missing figures are inserted.
 
-Measured on the NVIDIA whitepaper: 26 questions, 27 seconds — 13 paragraphs restored from images, 9 split figures merged, 1 truncated figure recovered, graphic blocks down from 86 to 63. On the academic paper it changed exactly one thing, which is the point: there wasn't much to fix, and the model didn't invent work.
+Measured on the NVIDIA whitepaper: 23 questions, 25 seconds — 13 paragraphs restored from images, 5 split figures merged, 1 truncated figure recovered, graphic blocks down from 71 to 52. On the academic paper it changed exactly one thing, which is the point: there wasn't much to fix, and the model didn't invent work.
 
 Guardrails that exist specifically to avoid making things worse: **a region containing two or more hard math glyphs is never touched** (restore `∂w⋆/∂rˆ` as text and it is gone for good); **a region where most lines have a wide internal gap is treated as a table** (the appendix "acronym / source / description" tables read exactly like prose by every word-level metric — only the column gutter separates them); **two blocks with a caption between them are never merged** (merging makes the caption part of an image, so it would never be translated again).
 
@@ -147,7 +147,7 @@ Two requirements for the API:
 
 The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
 
-Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 5.8 s, 103 paragraphs, 30 captions, 80 graphics (30 of them full-size figures), 3 cross-page stitches, 65k characters.
+Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 5.8 s, 103 paragraphs, 31 captions, 71 graphics, 3 cross-page stitches, 65k characters.
 
 ## How it works
 
@@ -201,6 +201,12 @@ Things that cost real time to find:
 **Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
 
 **Never set `white-space: normal` on KaTeX.** Its layout is absolutely positioned; allow wrapping and the right half of the equation vanishes. Scale oversized formulas with `transform` instead.
+
+**A running header that changes every few pages ends up as a picture.** The header blacklist works by normalising page numbers and keeping edge lines that repeat across sampled pages — which by construction cannot catch `Introduction` / `DLSS 4` / `APPENDIX A: …`, since each one appears on only two or three pages. And a short right-aligned 9pt line matches no body, heading or footnote rule, so it falls all the way through `classify()` to `graphic` and gets cropped. Sixteen of this whitepaper's 86 "figures" were section headers rendered as white cards in the middle of the text. The fix keys on shape rather than text — inside the margin band, single line, short, not wide — and, crucially, records the dropped box so `findFigureRegions` doesn't immediately re-crop the now-unclaimed ink.
+
+**Ask the question you actually need answered.** The split check first asked the model "is this one table or two unrelated things?". For a Table 3 made of two side-by-side sub-tables, "two" is a perfectly defensible answer — and it left the table shredded into strips. What the repair actually needs to know is different: *would merging this into one image swallow any translatable body text?* Rephrased that way the same model answers "one" on the same image, and the table comes back whole.
+
+**Blocks that overlap are not blocks that sit between.** The rows caught between two crops are usually sliced *through* — the top half of the glyphs stays in the image above, the bottom half becomes a text block. Looking for text "fully inside the gap" finds nothing at all, so merging leaves those half-rows dangling between the pieces. Overlap, not containment, is the right test.
 
 **Asking a model for coordinates does not work.** The first attempt at the audit sent whole pages to a vision model and asked where a figure's real boundary was. The boxes came back tens of points off, and cropping to them made things worse. It only became reliable once the model was restricted to **judgement questions** — *body text or figure?*, *one table or two?* — with every coordinate computed from the ink projection. The model decides *what*; the program decides *where*.
 

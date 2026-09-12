@@ -304,7 +304,11 @@ export async function scanDoc(doc, src, onProgress) {
       // 上下两条独立公式本来就该分开，合并反而错。公式的标志是硬数学符号。
       if (hardMath(joinLines(linesOf(itemsIn(e.items, a.bbox)))) >= 2
           || hardMath(joinLines(linesOf(itemsIn(e.items, b.bbox)))) >= 2) continue;
-      const between = ts.filter(t => t.bbox[1] >= a.bbox[3] - 2 && t.bbox[3] <= b.bbox[1] + 2);
+      // 夹在中间的文本块常常和上下两块**部分重叠**（表头行被从中间劈开，上半截
+      // 留在图里、下半截算成文字），用"完全落在缝隙里"去找会一个都找不到，
+      // 合并后那半行字就孤零零地挂在两张图中间。改成按纵向重叠判断。
+      const between = ts.filter(t => t.bbox[1] > a.bbox[1] && t.bbox[3] < b.bbox[3]
+        && Math.min(t.bbox[3], b.bbox[1] + 8) - Math.max(t.bbox[1], a.bbox[3] - 8) > 0);
       // 中间夹着标题、成句的正文或图注，说明上下本就是两件事。尤其图注绝不能被吞掉 ——
       // 合并意味着它变成图片的一部分，从此永远不会被翻译。
       if (between.some(t => t.kind === 'heading' || t.kind === 'caption'
@@ -387,10 +391,14 @@ function questionFor(s) {
         + '只有整张图几乎全是连贯的句子时才回 text。' };
     case 'split':
       return { opts: ['one', 'two'], ask:
-        '这张截图里可能包含被错误拆开的内容。请判断：\n'
-        + '- one：整张图是同一个表格或同一张图（含它的表头、图例、坐标轴、数据行）\n'
-        + '- two：上下是两个互不相干的东西，分开才对\n'
-        + '如果上半部分是表头或标题行、下半部分是它的数据，属于 one。' };
+        '这块内容现在被切成了好几张图，中间还夹着文字，显示出来支离破碎。'
+        + '现在要决定能不能把它整体截成一张图。请判断：\n'
+        + '- one：整张截图从头到尾都属于图表区域（表头行、标题栏、数据行、图例、'
+        + '同一个标题下并列的几个小表，都算），合成一张不会损失任何需要翻译的正文\n'
+        + '- two：中间夹着独立的正文段落、章节标题或与图表无关的说明，'
+        + '合并会把这些文字变成图片，从此无法翻译\n'
+        + '注意：只要整块都是图表内容，哪怕里面有两三个并列的小表，也应该回 one；'
+        + '只有当合并会吞掉真正的正文时才回 two。' };
     case 'cut':
       return { opts: ['yes', 'no'], ask:
         '第一张是当前截取的范围，第二张在它的基础上向外扩了一些。请判断：\n'
