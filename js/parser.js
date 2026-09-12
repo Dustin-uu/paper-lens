@@ -165,11 +165,22 @@ function detectColumnZone(spans, pageW, pageH, minGap) {
   const M = 10;
   const crosses = sp => sp.x0 < top.c - M && sp.x1 > top.c + M;
   const cross = spans.filter(crosses).length;
-  const left = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 < top.c).length;
-  const right = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 >= top.c).length;
+  const leftSp = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 < top.c);
+  const rightSp = spans.filter(sp => !crosses(sp) && (sp.x0 + sp.x1) / 2 >= top.c);
   const total = spans.length;
   if (cross > total * 0.45) return null;
-  if (left < total * 0.15 || right < total * 0.15) return null;
+  if (leftSp.length < total * 0.15 || rightSp.length < total * 0.15) return null;
+
+  // 表格的列缝和分栏的栏缝，光看空白是一模一样的 —— 这正是分栏检测以前误伤 22 页的原因。
+  // 真正能分开两者的是基线：表格每一行在缝隙两侧都有单元格，基线严丝合缝地对齐；
+  // 而两栏正文各走各的行距，左右基线几乎从不重合。
+  // 实测：NVIDIA 那两页真双栏重合率 0.08 / 0.14，两份文档里 25 个表格页全在 0.54 以上。
+  const rset = new Set(rightSp.map(sp => Math.round(sp.yBase * 2) / 2));
+  const lrows = [...new Set(leftSp.map(sp => Math.round(sp.yBase * 2) / 2))];
+  if (lrows.length < 6) return null;
+  let both = 0;
+  for (const y of lrows) if (rset.has(y) || rset.has(y + 0.5) || rset.has(y - 0.5)) both++;
+  if (both / lrows.length > 0.35) return null;              // 基线对齐 => 是表格，不是分栏
   return { cut: top.c, y0, y1 };
 }
 
@@ -190,7 +201,20 @@ function groupBlocks(lines, L) {
       const sameCol = Math.abs(ln.x0 - prev.x0) < 26
                    || (prevFull && ln.x0 < L.bodyX0Max) || centered;
       const sizeSame = Math.abs(ln.size - prev.size) < 1.2;      // 脚注 10pt 与正文 12pt 必须分开
-      const boldSame = BOLD_RE.test(ln.font) === BOLD_RE.test(prev.font); // 与正文同字号的小标题靠这条分出来
+      // 与正文同字号的小标题靠这条分出来。但判据必须是"整行都粗"而不是"主导字体是粗体"：
+      // 学术论文里大量段落以粗体引导词开头（"What we add. 正文正文…"），那一行粗体字数
+      // 往往过半，于是每个列表项的第一行都被单独切成一块，再因为不顶格而变成一张一行字的图片。
+      // 判据是"这行以粗体收尾"，不是"粗体字多"：真正的小标题整行都粗、收尾也粗；
+      // 段首引导词后面必然跟着正体（"…with complete proofs. Proposi-"），按字数算
+      // 粗体能占到八成以上，只看比例分不开。
+      const headingish = (l) => {
+        const sp = l.spans;
+        if (!sp.length || !BOLD_RE.test(sp[sp.length - 1].font)) return false;
+        let bold = 0, all = 0;
+        for (const x of sp) { all += x.str.length; if (BOLD_RE.test(x.font)) bold += x.str.length; }
+        return all > 0 && bold / all >= 0.5;
+      };
+      const boldSame = headingish(ln) === headingish(prev);
       const dispMath = (l) => l.x0 > L.bodyX0Max && isMath(l.text);
       const mathSame = dispMath(ln) === dispMath(prev);
       // 缩进突变 => 新段落/新条目。难点：正文是"首行缩进"、参考文献是"悬挂缩进"，
@@ -254,6 +278,23 @@ function splitMixed(b, L) {
   });
 }
 
+// 行内最大空档。表格的列缝有十几到几十 pt，正文的词距顶多几 pt。
+function maxGapIn(line) {
+  const sp = line.spans;
+  let g = 0;
+  for (let i = 1; i < sp.length; i++) g = Math.max(g, sp[i].x0 - sp[i - 1].x1);
+  return g;
+}
+
+// "这读着像不像一段话"：够长、虚词够多、有句末标点。
+function looksProse(text) {
+  const w = text.toLowerCase().match(/[a-z][a-z'-]+/g) || [];
+  if (w.length < 12) return false;
+  let n = 0;
+  for (const x of w) if (STOPWORDS.has(x)) n++;
+  return n >= 3 && /[.!?]/.test(text);
+}
+
 function classify(b, L, pageH) {
   const text = b.text;
   if (!text) return null;
@@ -287,6 +328,26 @@ function classify(b, L, pageH) {
         && b.lines.length >= 4 && !bad) return 'para';
   }
   if (fullWidth && size >= L.footnoteSize[0] && size <= L.footnoteSize[1]) return 'note';
+
+  // 兜底：多行、左边界齐、读着像话 —— 那就是正文，不管它多宽、缩进多少。
+  // 上面每条规则都挂着一个硬编码的宽度或缩进阈值，换一份文档就失效：
+  // 某篇 arXiv 论文的摘要宽 325pt（abstractMinW 是 350）、编号列表缩进到 x=89
+  // （学出来的顶格线是 81），两处都整段被截成图，整页读不了。
+  // 这里只看三件与版面无关的事：分了几行、左边界齐不齐、像不像人话。
+  // 单行的也要救：列表项开头那行"1. 粗体小标题。正文正文"会被 splitMixed 切成独立块，
+  // 一行、又不顶格，于是整行变成一张图片卡。但单行证据弱，额外要求它铺满正文宽度 ——
+  // 图例、坐标轴标签不会有这么长。
+  const bodyW = Math.max(120, L.bodyX1Min - L.bodyX0Max);
+  const longEnough = b.lines.length >= 2 || (b.x1 - b.x0) > bodyW * 0.85;
+  if (longEnough && size >= L.footnoteSize[0] - 0.8 && size <= L.bodySize[1] + 0.8
+      && !isMath(text) && !isTabular(text) && looksProse(text)) {
+    const xs = b.lines.map(l => l.x0);
+    const wide = b.lines.filter(l => maxGapIn(l) > Math.max(12, l.size * 1.2)).length;
+    // 列缝是区分"附录三列表"和"段落"的唯一可靠信号：那种表虚词多得完全像散文
+    if (Math.max(...xs) - Math.min(...xs) < 26 && wide / b.lines.length <= 0.34) {
+      return size > L.footnoteSize[1] ? 'para' : 'note';
+    }
+  }
 
   return 'graphic';
 }
@@ -633,13 +694,30 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
       hfBoxes.push({ kind: 'skip', bbox: [l.x0, l.yTop, l.x1, l.yBot] });
       return false;
     });
+    // "顶格线"和"满行线"是整页的常数，可分栏之后右栏的左边界在页面中间，
+    // 右栏没有任何一行能算顶格、也没有一行能算满行 —— classify 于是把整栏正文
+    // 全判成 graphic，右半页凭空消失。所以分栏后每栏都要用自己的边界重新算。
+    const colBox = {};
+    if (zone) {
+      for (const c of [0, 1]) {
+        const ls = lines.filter(l => l._col === c);
+        if (ls.length) colBox[c] = [Math.min(...ls.map(l => l.x0)), Math.max(...ls.map(l => l.x1))];
+      }
+    }
+    const indentTol = Math.max(18, L.bodyX0Max - (L._profile?.bodyX0 ?? 54));
+    const layoutFor = (col) => {
+      const cb = col === undefined ? null : colBox[col];
+      if (!cb) return L;
+      return { ...L, bodyX0Max: cb[0] + indentTol, bodyX1Min: cb[0] + (cb[1] - cb[0]) * 0.72 };
+    };
+
     let raw;
     if (zone) {
       raw = [];
       for (const col of [undefined, 0, 1]) {
         const ls = lines.filter(l => l._col === col);
         if (!ls.length) continue;
-        const blocks = groupBlocks(ls, L);
+        const blocks = groupBlocks(ls, layoutFor(col));
         blocks.forEach(b => { b._col = col; });
         raw.push(...blocks);
       }
@@ -649,8 +727,9 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
 
     const texts = [], gRects = [];
     for (const b0 of raw) {
-      for (const b of splitMixed(b0, L)) {
-        const kind = classify(b, L, vp1.height);
+      const BL = layoutFor(b0._col);
+      for (const b of splitMixed(b0, BL)) {
+        const kind = classify(b, BL, vp1.height);
         if (!kind) continue;
         const bbox = [b.x0, b.yTop, b.x1, b.yBot];
         // 分节页眉（"Introduction" / "DLSS 4" / "APPENDIX A: …"）每隔几页就换一次内容，

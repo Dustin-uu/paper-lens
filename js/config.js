@@ -44,11 +44,11 @@ export const LAYOUT = {
   abstractMinW: 350,
   graphicGap: 12,
   inkBridgeMax: 150,
-  // 分栏检测：默认关闭。实现见 parser.js detectColumnZone()。
-  // 它能修好真正的双栏页（侧边栏文字不再左右交错），但会把表格的列缝误判成栏缝——
-  // 实测一篇学术论文有 22 页被误判，待译字符凭空涨 19%，内容被切碎。
-  // 收益（少数页）远小于代价（多数页），所以默认关掉，想试的人自行打开。
-  detectColumns: false,
+  // 分栏检测。曾因"把表格列缝误判成栏缝"默认关闭（一篇学术论文 22 页误判、
+  // 待译字符凭空涨 19%）。现在靠基线对齐率把两者分开了：表格每行在缝隙两侧都有
+  // 单元格、基线严丝合缝；两栏正文各走各的行距，基线几乎从不重合。实现见
+  // parser.js detectColumnZone()。
+  detectColumns: true,
   minColumnGap: 6,      // 栏间空白达到多少 pt 才算分栏
   findFigures: true,  // 主动发现纯位图插图（它们不产生文本碎块，聚类看不见）
   minFigureH: 40,     // 图形区最小高度，低于此值视为噪点

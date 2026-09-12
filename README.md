@@ -147,6 +147,15 @@ Two requirements for the API:
 
 The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
 
+Verified on three documents with nothing in common typographically. Same settings, no manual tuning:
+
+| | 85-page LaTeX paper | 49-page NVIDIA whitepaper | 59-page arXiv preprint |
+|---|---|---|---|
+| Parse | 6.1 s | 5.8 s | 8.1 s |
+| Graphics | 71 | 48 | 68 |
+| Translatable characters | 130,113 | 65,354 | 59,039 |
+| Audit suspects | 4 | 10 | 8 |
+
 Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space, bitmap diagrams, cross-page tables). Auto-profiling handles it without touching a single setting: 5.8 s, 103 paragraphs, 31 captions, 71 graphics, 3 cross-page stitches, 65k characters.
 
 ## How it works
@@ -203,6 +212,10 @@ Things that cost real time to find:
 **Never set `white-space: normal` on KaTeX.** Its layout is absolutely positioned; allow wrapping and the right half of the equation vanishes. Scale oversized formulas with `transform` instead.
 
 **A running header that changes every few pages ends up as a picture.** The header blacklist works by normalising page numbers and keeping edge lines that repeat across sampled pages — which by construction cannot catch `Introduction` / `DLSS 4` / `APPENDIX A: …`, since each one appears on only two or three pages. And a short right-aligned 9pt line matches no body, heading or footnote rule, so it falls all the way through `classify()` to `graphic` and gets cropped. Sixteen of this whitepaper's 86 "figures" were section headers rendered as white cards in the middle of the text. The fix keys on shape rather than text — inside the margin band, single line, short, not wide — and, crucially, records the dropped box so `findFigureRegions` doesn't immediately re-crop the now-unclaimed ink.
+
+**Every width and indent threshold is a landmine, so stop relying on them.** A third document — an arXiv preprint — turned its entire abstract into one 571pt-tall image, and half the introduction with it. Cause: the abstract is 325pt wide and `abstractMinW` is 350; the numbered list indents to x=89 and the learned margin was 81. Both misses are a few points. The fix is a last-resort rule in `classify()` that ignores the page geometry entirely and asks three layout-independent questions instead: does it span several lines, do those lines share a left edge, and does the text read like prose (enough words, enough stopwords, sentence punctuation)? Table rows are excluded by the same column-gutter test used in the audit. That recovered 14% more translatable text on the new document and changed the two older ones by under 1%.
+
+**A paragraph that starts with a bold phrase is not a heading.** Block segmentation split whenever the dominant font's boldness changed, which is right for a bold subheading and wrong for the academic-writing habit of opening a paragraph with a bold run-in (`**What we add.** This paper provides...`). Those first lines were cut off as their own blocks, and being one line and indented they then became images. Counting bold characters does not separate the two — a run-in line can be 86% bold. What separates them is where the bold *ends*: a subheading ends bold, a run-in always has regular text after it. Splitting only on lines that end bold left heading counts identical across all three documents (64 / 45 / 39) while merging the run-in paragraphs back together.
 
 **Pairwise adjacency cannot reassemble a shredded table.** A long spec table lands on the page as a dozen alternating strips — image, row-of-text, image, row-of-text. Checking neighbours a pair at a time means any single threshold that rejects one pair breaks the chain there and leaves the rest in pieces; on one page the rejections came from three different rules (both strips under the 50pt height floor, a 102pt gap, and the word `Edition` in between). Sweeping instead — start at an image and keep absorbing downward until you hit a hard boundary — put all six pieces and the five text rows between them into a single question.
 
