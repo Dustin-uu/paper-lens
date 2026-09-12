@@ -11,12 +11,24 @@ export async function initPdfjs() {
   return pdfjs;
 }
 
-const CAPTION_RE = /^(Table|Figure|Panel)\s+[A-Z]?\.?\d+/i;
+const CAPTION_RE = /^(Table|Figure|Fig|Panel|Chart|Exhibit)\s*\.?\s*[A-Z]?\.?\s*\d+/i;
 const PAGENO_RE = /^[ivxlcdm]{0,7}\d{0,4}$/i;
 const HEAD_NUM_RE = /^([A-Z]\.)?\d+(\.\d+)*\s*[A-Z]/;
 const ENG_START_RE = /^[A-Z][a-z]+[,;]?\s+[a-z]/;
 const MATH_KW = /\b(arg\s*min|arg\s*max|s\.t\.|subject to)\b/i;
 const MATH_CHARS = new Set('⋆⊤∈∀∃≤≥≠≈∂∇∑∏∫√∥⊙⊗←→⇒⇔∞λνθϕφηζγβαμσΣΩΛΦΨΓΔ⌊⌋⌈⌉ˆ˜');
+// 粗体判定要跨字体体系：LaTeX 是 CMBX*，商业文档是 NVIDIASans-Bold / Arial-BoldMT 这类
+// 页眉页脚在多页重复出现，把页码换成 # 后即可跨页比对
+const hfKey = t => t.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 60);
+
+function isHeaderFooter(line, L, pageH) {
+  if (!L._skipTexts || !L._skipTexts.size) return false;
+  if (line.yTop > pageH * 0.09 && line.yBot < pageH * 0.91) return false;
+  return L._skipTexts.has(hfKey(line.text));
+}
+
+const BOLD_RE = /bold|black|heavy|semib|demib|[-_]bd\b|BX/i;
+
 const STOPWORDS = new Set(['the','of','a','an','is','are','was','we','in','to','for','that',
   'with','and','this','be','as','by','on','it','not','our','their','which','can','from','at',
   'or','has','have','these','its','but']);
@@ -117,7 +129,7 @@ function groupBlocks(lines, L) {
       const sameCol = Math.abs(ln.x0 - prev.x0) < 26
                    || (prevFull && ln.x0 < L.bodyX0Max) || centered;
       const sizeSame = Math.abs(ln.size - prev.size) < 1.2;      // 脚注 10pt 与正文 12pt 必须分开
-      const boldSame = ln.font.includes('BX') === prev.font.includes('BX'); // 12pt 的四级标题靠这条分出来
+      const boldSame = BOLD_RE.test(ln.font) === BOLD_RE.test(prev.font); // 与正文同字号的小标题靠这条分出来
       const dispMath = (l) => l.x0 > L.bodyX0Max && isMath(l.text);
       const mathSame = dispMath(ln) === dispMath(prev);
       // 缩进突变 => 新段落/新条目。难点：正文是"首行缩进"、参考文献是"悬挂缩进"，
@@ -181,25 +193,25 @@ function splitMixed(b, L) {
   });
 }
 
-function classify(b, L) {
+function classify(b, L, pageH) {
   const text = b.text;
   if (!text) return null;
   const { size, font, x0, x1 } = b;
-  if (b.yTop > L.pageNoY && PAGENO_RE.test(text) && text.length <= 5) return null;  // 页码
+  if (b.yTop > (pageH || 792) * 0.88 && PAGENO_RE.test(text) && text.length <= 5) return null;  // 页码
 
   const indented = x0 < L.bodyX0Max;
   const fullWidth = indented && x1 > L.bodyX1Min;
   const words = text.split(/\s+/).length;
 
-  if (font.includes('BX') && size >= L.headMinSize) return 'heading';
-  if (font.includes('BX') && size >= 11.5 && HEAD_NUM_RE.test(text) && words <= 14) return 'heading';
+  // 图题常是粗体且字号不小，必须先于标题判定，否则 "Figure1.xxx" 会被当成章节标题
+  if (CAPTION_RE.test(text)) return 'caption';
+  if (BOLD_RE.test(font) && size >= L.headMinSize) return 'heading';
+  if (BOLD_RE.test(font) && size >= L.bodySize[0] && HEAD_NUM_RE.test(text) && words <= 14) return 'heading';
   if (size >= L.headMinSize && x0 < L.bodyX0Max + 175 && text.length < 90) return 'heading';
   // 居中的无编号粗体小标题：Abstract / Acknowledgements / Appendix。字号与正文相当，
   // 靠"粗体 + 不顶格 + 首字母大写的少数几个英文词"识别，避免误伤公式里的 \max、s.t.
-  if (font.includes('BX') && !fullWidth && text.length < 30
+  if (BOLD_RE.test(font) && !fullWidth && text.length < 30
       && /^[A-Z][A-Za-z]{2,}(\s+[A-Za-z]+){0,3}$/.test(text)) return 'heading';
-  if (CAPTION_RE.test(text)) return 'caption';
-
   const bodySized = size >= L.bodySize[0] && size <= L.bodySize[1];
   const absSized = size >= L.abstractSize[0] && size <= L.abstractSize[1];
   if (bodySized || absSized) {
@@ -247,6 +259,79 @@ function overlapRatio(a, b) {
   return (w * h) / Math.max((a[2] - a[0]) * (a[3] - a[1]), 1);
 }
 
+
+// 版面自适应：默认值是按 LaTeX 论文（正文 12pt、页边距 72pt）调的，换成商业白皮书
+// （正文 11pt、页边距 50pt）会全盘失配 —— 正文字号一旦落在区间外，整篇都会被当成图。
+// 与其让用户去猜参数，不如先采样几页，从 PDF 自己的排版统计里把这些值推出来。
+export async function profileDocument(doc, L, maxSample = 14) {
+  let pageWidth = 612;
+  const sizeHist = new Map(), xHist = new Map(), edgeHist = new Map();
+  const total = doc.numPages;
+  // 跳过封面/目录，从正文区域采样
+  const start = total > 6 ? Math.floor(total * 0.2) : 0;
+  const n = Math.min(total - start, maxSample);
+  for (let i = 0; i < n; i++) {
+    const page = await doc.getPage(start + i + 1);
+    const vp = page.getViewport({ scale: 1 });
+    pageWidth = vp.width;
+    const tc = await page.getTextContent();
+    // 先按基线聚行，再取每行最左的 x —— 直接统计片段的 x 会被行中间的片段带偏
+    const rows = new Map();
+    for (const it of tc.items) {
+      if (!it.str.trim()) continue;
+      const t = pdfjs.Util.transform(vp.transform, it.transform);
+      const size = Math.round(Math.hypot(t[2], t[3]) * 10) / 10;
+      if (size < 4 || size > 40) continue;
+      sizeHist.set(size, (sizeHist.get(size) || 0) + it.str.length);
+      const key = Math.round(t[5]);
+      const r = rows.get(key) || { x: Infinity, y: t[5], txt: '' };
+      r.x = Math.min(r.x, t[4]); r.txt += it.str;
+      rows.set(key, r);
+    }
+    for (const r of rows.values()) {
+      const b = Math.round(r.x / 2) * 2;
+      xHist.set(b, (xHist.get(b) || 0) + 1);
+      // 页面上下边缘的行，登记文本以便跨页比对
+      if (r.y < vp.height * 0.09 || r.y > vp.height * 0.91) {
+        const k = hfKey(r.txt);
+        if (k.length >= 3) edgeHist.set(k, (edgeHist.get(k) || 0) + 1);
+      }
+    }
+    page.cleanup();
+  }
+  if (!sizeHist.size) return L;
+
+  // 正文字号 = 字符数最多的字号
+  const bodySize = [...sizeHist.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  // 正文左边界 = 最靠左的那个显著峰（正文行首远多于缩进行、居中行）
+  const xs = [...xHist.entries()].sort((a, b) => a[0] - b[0]);
+  const rowTotal = xs.reduce((s, [, c]) => s + c, 0);
+  let bodyX0 = xs[0][0];
+  for (const [x, c] of xs) if (c / rowTotal > 0.06) { bodyX0 = x; break; }
+  // 正文常有多级缩进（首行缩进、项目符号、引用块）。缩进量因文档而异——LaTeX 论文
+  // 是 18pt，这份白皮书是 36pt——靠字号推容差会漏，直接从直方图里把左侧的次峰学出来。
+  let indentMax = bodyX0;
+  for (const [x, c] of xs) {
+    if (x > pageWidth * 0.35) break;          // 只看左半部分，避开居中标题和右栏
+    if (c / rowTotal > 0.03) indentMax = x;
+  }
+
+  const out = { ...L };
+  out.bodySize = [Math.round((bodySize - 0.6) * 10) / 10, Math.round((bodySize + 0.8) * 10) / 10];
+  out.abstractSize = [Math.round((bodySize - 1.4) * 10) / 10, Math.round((bodySize - 0.7) * 10) / 10];
+  out.footnoteSize = [Math.round((bodySize - 2.2) * 10) / 10, Math.round((bodySize - 1.5) * 10) / 10];
+  out.headMinSize = Math.round((bodySize + 1.4) * 10) / 10;
+  out.bodyX0Max = Math.round(indentMax + bodySize * 0.6);   // 容得下最深一级正文缩进
+  out.abstractX0Max = Math.round(bodyX0 + bodySize * 8);
+  out._indentMax = indentMax;
+  // 在采样页里重复出现 3 次以上的边缘行，判定为页眉/页脚
+  out._skipTexts = new Set([...edgeHist.entries()]
+    .filter(([, c]) => c >= Math.min(3, Math.max(2, Math.floor(n / 3))))
+    .map(([t]) => t));
+  out._profile = { bodySize, bodyX0, sampled: n, headerFooters: out._skipTexts.size };
+  return out;
+}
+
 // ---------- 主流程 ----------
 
 // PDF.js 的渲染调度走 requestAnimationFrame，而浏览器在标签页隐藏时会冻结 rAF，
@@ -267,7 +352,20 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
   await initPdfjs();
   const buf = await file.arrayBuffer();
   const doc = await pdfjs.getDocument({ data: buf }).promise;
-  const L = layout;
+  let L = layout;
+  if (L.autoProfile !== false) {
+    L = await profileDocument(doc, L);
+    const p0 = await doc.getPage(1);
+    const w0 = p0.getViewport({ scale: 1 }).width;
+    if (L._profile) L.bodyX1Min = Math.round(w0 - L._profile.bodyX0 - w0 * 0.12);
+    p0.cleanup();
+    if (onProgress && L._profile) {
+      console.info('[paper-lens] 版面自适应:', JSON.stringify({
+        正文字号: L._profile.bodySize, 正文左边界: L._profile.bodyX0,
+        推出的字号区间: L.bodySize, 顶格线: L.bodyX0Max, 满行线: L.bodyX1Min,
+      }));
+    }
+  }
   const scale = L.dpi / 72;
   const blocks = [];
   let gi = 0;
@@ -307,13 +405,13 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     }
 
     const spans = toSpans(tc, vp1, fontMap);
-    const lines = groupLines(spans, L.lineTol);
+    const lines = groupLines(spans, L.lineTol).filter(l => !isHeaderFooter(l, L, vp1.height));
     const raw = groupBlocks(lines, L);
 
     const texts = [], gRects = [];
     for (const b0 of raw) {
       for (const b of splitMixed(b0, L)) {
-        const kind = classify(b, L);
+        const kind = classify(b, L, vp1.height);
         if (!kind) continue;
         const bbox = [b.x0, b.yTop, b.x1, b.yBot];
         if (kind === 'graphic') gRects.push(bbox);

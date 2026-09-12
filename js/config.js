@@ -27,6 +27,7 @@ export const PRESETS = [
 
 // 版面解析参数。换排版风格的 PDF 时在设置面板里调。
 export const LAYOUT = {
+  autoProfile: true,  // 先采样几页统计出正文字号与页边距，再据此推导各阈值
   dpi: 200,
   bodySize: [11.4, 12.6],
   abstractSize: [10.6, 11.2],

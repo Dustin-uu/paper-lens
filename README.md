@@ -44,6 +44,8 @@ So: keep the formulas as pixels, put the tutor next to the text, and never let t
 
 Formulas, tables and figures are **cropped from the rendered PDF at their original coordinates** and embedded as images. Zero fidelity loss, because nothing is reconstructed. Only prose gets translated.
 
+Layout thresholds are **learned from the document itself** — it samples pages, takes the modal body font size and left margin, and derives the rest. A LaTeX paper (12pt body at x=72) and an NVIDIA whitepaper (11pt at x=54) both parse correctly with no manual tuning.
+
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/04-fidelity.png" alt="Formulas preserved inline"></td>
@@ -120,6 +122,8 @@ Two requirements for the API:
 
 The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
 
+Also verified on a 49-page NVIDIA GPU architecture whitepaper — a completely different typographic system (NVIDIASans instead of Computer Modern, 11pt body, running headers, `Figure1.` captions with no space). Auto-profiling handles it without touching a single setting: 103 paragraphs, 33 captions, 54 graphics, 68k characters.
+
 ## How it works
 
 ```
@@ -157,6 +161,10 @@ Things that cost real time to find:
 
 **Body text and references have opposite indent semantics.** Paragraphs indent the first line; bibliography entries hang it. The same x-offset means opposite things, so block segmentation has to infer which style it's looking at from the second line.
 
+**Hardcoding layout thresholds does not survive contact with a second document.** The defaults were tuned on a LaTeX paper: 12pt body, margin at x=72, bold detected by `CMBX` in the font name. An NVIDIA whitepaper breaks every one of those — 11pt body, margin at x=54, `NVIDIASans-Bold`. The body-size window alone was enough to misclassify the entire document as images. The fix is to sample a dozen pages up front and learn the modal body size, the left margin, and the deepest body indent from the x-histogram. On the original LaTeX paper the learned values come out at 12pt / x=72 / x0Max=97 — essentially identical to the hand-tuned constants, which is a good sign the statistics are sound.
+
+**Running headers poison block segmentation.** Academic papers don't have them; commercial documents do. A repeated header line merges into the first paragraph, the block's attributes go incoherent, and the whole thing gets screenshotted. Detect them during profiling — normalize page numbers to `#`, and blacklist edge lines that repeat across sampled pages — then drop them at the *line* level, before blocks are formed.
+
 **A 2pt threshold cost four regressions.** LaTeX indents the first line of a paragraph to x=90; the "starts at margin" cutoff was 88. Single-line paragraphs and bulleted lists — the cases where a block's min-x *is* the indent — got classified as graphics and screenshotted as images.
 
 **Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
@@ -167,7 +175,7 @@ Things that cost real time to find:
 
 - **Two-column PDFs are not supported.** Blocks sort by y-coordinate, so columns interleave. Fixing it means splitting by x first.
 - **Scanned PDFs need OCR first** — this reads the text layer, it does not do OCR.
-- Layout defaults are tuned for US-Letter LaTeX papers (12pt body at x=72). Other typography may need a pass through the layout settings.
+- Auto-profiling assumes a single dominant body style. Documents that mix wildly different layouts across sections may still need a manual pass through the layout settings.
 - One known cosmetic issue: an inline fraction inside a footnote can get cropped as a wide thin strip.
 
 ## Contributing
