@@ -585,8 +585,9 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
     }
 
     // 只有顶格的正文能作为图形区的边界；表头、数据行这些是可以被吸收的
-    const bodyLines = texts.filter(t => (t.kind === 'para' || t.kind === 'note')
-                                     && t.bbox[0] < L.bodyX0Max);
+    const bodyLines = texts.filter(t =>
+      t.kind === 'caption' || t.kind === 'heading'
+      || ((t.kind === 'para' || t.kind === 'note') && t.bbox[0] < L.bodyX0Max));
     if (L.expandFigures !== false) {
       regions = regions.map(r => expandRegion(r, getInk(), bodyLines, L));
     }
@@ -613,6 +614,13 @@ async function parsePdfInner(file, layout, onProgress, maxPages) {
       }
       if (r[3] - r[1] < L.minGraphicH) continue;
       // 与正文块重叠度过高 => 会把正文重复截一遍
+      // 与某个文本块大面积重叠时，先试着把边界收到它外面；收不动才放弃这一块
+      for (const t of textOnly) {
+        if (overlapRatio(t.bbox, r) <= 0.6) continue;
+        if (t.bbox[1] > r[1] + 20) r[3] = Math.min(r[3], t.bbox[1] - 1);
+        else if (t.bbox[3] < r[3] - 20) r[1] = Math.max(r[1], t.bbox[3] + 1);
+      }
+      if (r[3] - r[1] < L.minGraphicH) continue;
       if (textOnly.some(t => overlapRatio(t.bbox, r) > 0.6)) continue;
       // 只丢弃"矮于一行且落在段落内"的碎片（上下标）。原来按重叠比例一刀切，
       // 会把夹在两段之间的独立公式整个误杀，表现为公式凭空消失。
