@@ -1,0 +1,7 @@
+.DS_Store
+node_modules/
+*.pdf
+out/
+*.db
+.vscode/
+.idea/

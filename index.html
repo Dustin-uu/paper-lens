@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-view="zh-first" data-theme="light" data-toc="on" data-ai="off" data-notes="off" data-screen="home">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF 双语精读</title>
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<link rel="stylesheet" href="app.css">
+<style>
+  html[data-screen="home"] #bar .reading,
+  html[data-screen="work"] #bar .reading,
+  html[data-screen="home"] #toc, html[data-screen="work"] #toc,
+  html[data-screen="home"] main, html[data-screen="work"] main,
+  html[data-screen="read"] #home, html[data-screen="home"] #work,
+  html[data-screen="read"] #work, html[data-screen="work"] #home { display:none }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <span class="brand home-only" id="goHome"><b>双语精读</b></span>
+  <button class="ico reading" id="back" title="返回文档库，翻译其他文件"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3.5 5 8l4.5 4.5"/></svg><span>返回</span></button>
+  <button class="ico reading" id="btoc" title="目录"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h8"/></svg></button>
+  <span class="t reading" id="docTitle"></span>
+  <span class="sp"></span>
+  <div class="seg reading" id="views">
+    <button data-v="zh-first" aria-pressed="true">中文优先</button>
+    <button data-v="side">左右对照</button>
+    <button data-v="zh-only">仅中文</button>
+    <button data-v="en-only">仅原文</button>
+  </div>
+  <button class="ico reading" id="fsmall" title="缩小字号">A−</button>
+  <button class="ico reading" id="fbig" title="放大字号">A+</button>
+  <button class="ico reading" id="bmark" title="选中文字时自动标黄"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M11.3 2.3 13.7 4.7 6 12.4l-3.2.8.8-3.2z"/><path d="M2 14.5h12"/></svg></button>
+  <button class="ico reading" id="bnotes" title="我的标注">标注</button>
+  <button class="ico reading" id="bai" title="AI 助读">AI</button>
+  <button class="ico" id="btheme" title="深色/浅色"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 0 0 11z" fill="currentColor" stroke="none"/></svg></button>
+  <button class="ico" id="bset" title="设置"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.8M8 12.6v1.8M14.4 8h-1.8M3.4 8H1.6M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3M12.5 12.5l-1.3-1.3M4.8 4.8 3.5 3.5"/></svg></button>
+</div>
+<div id="prog"></div>
+
+<nav id="toc"></nav>
+
+<main id="content"></main>
+
+<!-- 首页 -->
+<div id="home">
+  <h1>PDF 双语精读</h1>
+  <p class="sub">上传英文 PDF，自动生成中英对照阅读器：公式、表格、插图按原始版面保留，读到看不懂的地方可以直接点公式问 AI，或划选任意文字追问。<br>全部在你的浏览器里完成，文件不上传到任何服务器；只有待翻译的文字会发往你自己配置的模型接口。</p>
+
+  <div id="drop">
+    <div class="big">拖入 PDF，或点击选择文件</div>
+    <div class="small">支持文字版 PDF（扫描件需先 OCR）· 处理过程在本地完成</div>
+    <input type="file" id="file" accept="application/pdf" hidden>
+  </div>
+  <div class="warn" id="noKey" style="display:none">
+    还没配置模型接口。打开右上角<b>设置</b>填入 API 地址和密钥后即可开始翻译。
+  </div>
+
+  <div id="lib"></div>
+</div>
+
+<!-- 处理进度 -->
+<div id="work">
+  <div class="stage" id="wkStage">正在处理…</div>
+  <div class="detail" id="wkDetail"></div>
+  <div class="pbar"><i id="wkBar"></i></div>
+  <div style="margin-top:22px"><button class="btn" id="wkStop">停止</button></div>
+</div>
+
+<!-- 标注面板 -->
+<aside id="notes">
+  <div class="hd">
+    <span class="ttl">我的标注</span>
+    <button class="ico" id="notesClose" title="关闭"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+  <div class="body" id="notesBody"></div>
+</aside>
+
+<!-- AI 侧栏 -->
+<aside id="ai">
+  <div class="hd">
+    <span class="ttl" id="aiTitle">AI 助读</span>
+    <button class="ico" id="aiClose" title="关闭"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+  <div class="body" id="aiBody"></div>
+  <div class="ft">
+    <form id="aiForm">
+      <textarea id="aiInput" rows="1" placeholder="追问… （Enter 发送，Shift+Enter 换行）"></textarea>
+      <button class="btn primary" type="submit" id="aiSend">发送</button>
+    </form>
+  </div>
+</aside>
+
+<!-- 设置 -->
+<div id="mask">
+  <div class="modal">
+    <div class="hd"><h3>设置</h3><button class="ico" id="setClose" title="关闭"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+    <div class="bd">
+      <div class="fld">
+        <label>服务商预设</label>
+        <div class="chips" id="presets"></div>
+      </div>
+      <div class="fld">
+        <label>API 地址（Base URL）</label>
+        <input id="fBase" placeholder="https://api.deepseek.com/v1">
+        <div class="hint">填到 <code>/v1</code> 为止，<b>不要</b>带 <code>/chat/completions</code>，也不要填官网首页地址。<br>
+        正确示例：<code>https://api.deepseek.com/v1</code>　<code>https://api.openai.com/v1</code><br>
+        接口需允许浏览器跨域（CORS）；自建网关请放行 <code>Access-Control-Allow-Origin</code>。填完点下方「测试连接」会明确告诉你哪里不对。</div>
+      </div>
+      <div class="fld">
+        <label>API Key</label>
+        <input id="fKey" type="password" placeholder="sk-…">
+        <div class="hint">只保存在本机浏览器的 localStorage，不会发往除上面这个地址以外的任何地方。</div>
+      </div>
+      <div class="row">
+        <div class="fld">
+          <label>翻译模型</label>
+          <input id="fModel" placeholder="deepseek-chat" list="modelList">
+          <datalist id="modelList"></datalist>
+        </div>
+        <div class="fld">
+          <label>读图模型（讲解公式用）</label>
+          <input id="fVision" placeholder="留空 = 同上">
+          <div class="hint">填 <code>-</code> 表示模型不支持读图，讲解公式时改为仅依据上下文。</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>并发数</label><input id="fConc" type="number" min="1" max="16"></div>
+        <div class="fld"><label>每批字符数</label><input id="fBatch" type="number" min="500" max="8000" step="100"></div>
+      </div>
+      <div class="fld">
+        <label>目标语言</label>
+        <input id="fLang" placeholder="简体中文">
+      </div>
+      <details class="fld" id="advBox">
+        <summary>版面解析参数（换排版风格的 PDF 时才需要动）</summary>
+        <div class="row" style="margin-top:12px">
+          <div class="fld"><label>截图分辨率 DPI</label><input id="lDpi" type="number" min="100" max="400" step="25">
+            <div class="hint">越高越清晰，也越占空间</div></div>
+          <div class="fld"><label>行聚合容差</label><input id="lLineTol" type="number" min="0.2" max="1.2" step="0.02">
+            <div class="hint">上下标被切成独立图就调大</div></div>
+        </div>
+        <div class="row">
+          <div class="fld"><label>段落分块阈值</label><input id="lBlockGap" type="number" min="1" max="3" step="0.05">
+            <div class="hint">段落粘连调小，被切碎调大</div></div>
+          <div class="fld"><label>图形合并间距</label><input id="lGraphicGap" type="number" min="2" max="40" step="1">
+            <div class="hint">同一张图被拆开就调大</div></div>
+        </div>
+        <div class="row">
+          <div class="fld"><label>墨迹桥接上限</label><input id="lInkBridge" type="number" min="0" max="400" step="10">
+            <div class="hint">图表碎片间隔小于此值且中间有线条时合并；设 0 关闭</div></div>
+          <div class="fld"><label>正文字号范围</label><input id="lBodySize" placeholder="11.4-12.6">
+            <div class="hint">正文被当成图时调这里</div></div>
+        </div>
+        <button class="btn" id="btnResetLayout" style="margin-top:4px">恢复默认</button>
+      </details>
+
+      <div class="fld">
+        <label>本地数据</label>
+        <div class="hint" id="usage">统计中…</div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn" id="btnClearCache">清空翻译缓存</button>
+        </div>
+      </div>
+    </div>
+    <div class="ft">
+      <button class="btn" id="btnTest">测试连接</button>
+      <button class="btn" id="btnModels">拉取模型列表</button>
+      <span class="status" id="setStatus"></span>
+      <button class="btn primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="lb"><img src="" alt=""></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

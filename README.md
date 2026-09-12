@@ -1,0 +1,179 @@
+<div align="center">
+
+# paper-lens
+
+**Read English papers bilingually — with the formulas intact and an AI tutor in the margin.**
+
+Drop in a PDF, get a side-by-side Chinese/English reader where every equation, table and figure keeps its original typesetting. Click a formula to have it explained. Highlight anything to ask a follow-up.
+
+Runs entirely in your browser. No backend, no build step, no upload.
+
+[中文说明](README.zh-CN.md)
+
+<img src="docs/screenshots/06-ai-formula.png" width="920" alt="Reading view with AI explaining a formula">
+
+</div>
+
+---
+
+## Why this exists
+
+I was working through an 85-page finance/ML paper and every existing option failed in a different way.
+
+**Machine translators destroy the math.** This is not a quality problem, it is structural. A PDF has no concept of "an equation" — it stores glyphs at coordinates. Pull the text out of a matrix and you get this:
+
+```
+0.2880.4130.8991.057
+```
+
+A table fares worse:
+
+```
+High(H)40.020.61.9443.620.42.14225.819.31.34...
+```
+
+Any pipeline that tries to reconstruct formulas from the text stream is building on sand. Translate that stream and the math is gone.
+
+**Translation alone doesn't solve the actual problem.** When you hit a bilevel optimization with a KKT-differentiated inner layer, a Chinese rendering of the surrounding prose doesn't help. You need someone to walk you through the symbols. That means switching to a chat window, re-typing the formula in LaTeX, and re-explaining the context you just read — every single time.
+
+**The convenient tools want your file.** Upload-based services are fine for a blog post and wrong for an unpublished draft, a client document, or anything under NDA.
+
+So: keep the formulas as pixels, put the tutor next to the text, and never let the file leave the machine.
+
+## What it does
+
+Formulas, tables and figures are **cropped from the rendered PDF at their original coordinates** and embedded as images. Zero fidelity loss, because nothing is reconstructed. Only prose gets translated.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/04-fidelity.png" alt="Formulas preserved inline"></td>
+<td width="50%"><img src="docs/screenshots/05-side-by-side.png" alt="Side-by-side view"></td>
+</tr>
+<tr>
+<td align="center"><em>Equations sit exactly where they belong, between the paragraphs that discuss them</em></td>
+<td align="center"><em>Four view modes — this is side-by-side</em></td>
+</tr>
+</table>
+
+### Ask about a formula
+
+Click any equation. The image **and** the surrounding context (nearest section heading, neighbouring paragraphs in both languages) go to the model together, so the answer is grounded in this paper rather than generic. Answers render through KaTeX — you get $\ell(\theta)=\frac{1}{NT}\sum_{i=1}^{N}\sum_{t=1}^{T}(\cdot)^2$, not `1/(NT) Σ...`.
+
+Follow-up questions keep the conversation, so "why is it designed this way?" works as a second turn.
+
+### Highlight and annotate
+
+<img src="docs/screenshots/07-highlight-notes.png" width="920" alt="Highlighting and the annotation panel">
+
+Select text and it highlights immediately — in the translation or the original, both work. The panel lists every highlight in document order; click one to jump back and flash it in place.
+
+Highlights are stored as **character offsets within a block**, not DOM positions, so they survive view switches, re-translation and re-rendering.
+
+### Bring your own model
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/08-settings.png" alt="Settings"></td>
+<td width="50%"><img src="docs/screenshots/09-layout-params.png" alt="Layout parameters"></td>
+</tr>
+</table>
+
+Any OpenAI-compatible endpoint. Presets for DeepSeek, OpenAI, Zhipu GLM, Moonshot, Qwen, SiliconFlow and local Ollama. The key lives in `localStorage` and is sent to exactly one place: the URL you typed.
+
+Layout parameters are exposed too, for when a PDF's typography doesn't match the defaults.
+
+### Also
+
+- **Four view modes** — translation-first, side-by-side, translation-only, original-only
+- **Document library** in IndexedDB; translations are cached, so reopening costs nothing
+- **Interruptible** — stop mid-translation, resume later
+- **Built-in glossary** — 70+ finance/optimization terms pinned to consistent translations
+- **Dark mode** and `Cmd+P` to print (toolbars hide themselves)
+
+<img src="docs/screenshots/10-dark.png" width="920" alt="Dark mode">
+
+## Quick start
+
+```bash
+git clone https://github.com/OWNER/paper-lens.git
+cd paper-lens
+python3 -m http.server 8080
+```
+
+Open <http://localhost:8080>, click **设置** (Settings), fill in your API base URL and key, then drop a PDF on the page.
+
+> **Serve it over HTTP — don't double-click `index.html`.** ES modules and the pdf.js worker are blocked by the same-origin policy on `file://`. Any static server works: `npx serve`, nginx, GitHub Pages.
+
+Two requirements for the API:
+
+1. **CORS must be open.** Most official APIs are. Self-hosted gateways need `Access-Control-Allow-Origin`. The *Test connection* button tells you plainly when this is the problem.
+2. **Explaining formulas needs a vision model.** If yours can't read images, put `-` in the vision-model field and it degrades gracefully — it reasons from context and says so.
+
+## Measured on an 85-page paper
+
+| | |
+|---|---|
+| Parsing | 11.4 s (85 pages, in-browser) |
+| Translation | ~150 s at 6-way concurrency |
+| Blocks | 481 — 39 headings / 200 paragraphs / 28 captions / 32 footnotes / **67 graphics** / 115 references |
+| Re-open | instant (cache hit) |
+
+The parser is validated against a PyMuPDF implementation of the same logic: identical graphic count (67), and translatable character counts within 0.8%.
+
+## How it works
+
+```
+PDF ──► parser.js ──► block sequence + cropped images
+                          │
+                          ├─► translator.js ──► batched / concurrent / cached
+                          ├─► reader.js     ──► render, TOC, highlight, click-to-ask
+                          └─► ai.js         ──► context assembly, streamed answers
+```
+
+| File | Role |
+|---|---|
+| `js/parser.js` | PDF → layout blocks + image crops. **The core.** |
+| `js/translator.js` | Batching, concurrency, caching, graceful degradation |
+| `js/llm.js` | OpenAI-format client with streaming |
+| `js/ai.js` | Conversation state, context assembly, formula prompts |
+| `js/reader.js` | Rendering, TOC, selection highlighting |
+| `js/store.js` | IndexedDB — library + translation cache |
+| `js/main.js` | State machine and interactions |
+| `js/config.js` | Defaults, provider presets, layout params, glossary |
+
+### Notes from the build
+
+Things that cost real time to find:
+
+**Formulas must be cropped, never reconstructed.** See the mangled matrix above. There is no clever parsing that recovers it.
+
+**PDF.js rendering is driven by `requestAnimationFrame`, which browsers freeze in background tabs.** Switch tabs mid-parse and it deadlocks. OffscreenCanvas does not help — the freeze is on the scheduler, not the canvas. Swapping rAF for `setTimeout` during parsing fixes it and removes the 60fps ceiling as a bonus.
+
+**Vector strokes are what hold a figure together, and they aren't in the text stream.** Axis lines, plot curves, fraction bars, radicals, matrix brackets — `getTextContent()` returns none of them. Cluster only by text-fragment spacing and a line chart shatters into horizontal bands (one figure here broke into 4 pieces with 66/21/16pt gaps). Parsing `getOperatorList()` means reimplementing the graphics state stack, so instead: **look at the rendered pixels**. Downscale the page to 72dpi once, compute a per-row ink projection, and merge two fragments when the gap between them has no text but does have ink.
+
+> Don't sample `getImageData` per-region on the 200dpi canvas — that took 85 pages from 5s to 80s. One downscaled pass, computed lazily, is 11s.
+
+**IndexedDB returns `undefined` for a miss**, so `result !== undefined` is not a valid "did we get a value" check — it returns the `IDBRequest` object itself and every block looks like a cache hit on first run.
+
+**Body text and references have opposite indent semantics.** Paragraphs indent the first line; bibliography entries hang it. The same x-offset means opposite things, so block segmentation has to infer which style it's looking at from the second line.
+
+**A 2pt threshold cost four regressions.** LaTeX indents the first line of a paragraph to x=90; the "starts at margin" cutoff was 88. Single-line paragraphs and bulleted lists — the cases where a block's min-x *is* the indent — got classified as graphics and screenshotted as images.
+
+**Extract LaTeX before running Markdown.** `**` and `_` will happily eat `\frac{}{}` and `\sum_{i=1}^{N}`. Stash the math, convert, then substitute back.
+
+**Never set `white-space: normal` on KaTeX.** Its layout is absolutely positioned; allow wrapping and the right half of the equation vanishes. Scale oversized formulas with `transform` instead.
+
+## Limitations
+
+- **Two-column PDFs are not supported.** Blocks sort by y-coordinate, so columns interleave. Fixing it means splitting by x first.
+- **Scanned PDFs need OCR first** — this reads the text layer, it does not do OCR.
+- Layout defaults are tuned for US-Letter LaTeX papers (12pt body at x=72). Other typography may need a pass through the layout settings.
+- One known cosmetic issue: an inline fraction inside a footnote can get cropped as a wide thin strip.
+
+## Contributing
+
+Issues and PRs welcome. If a PDF parses badly, attaching it (or a page of it) helps enormously — nearly every rule in `parser.js` came from a concrete failure.
+
+## License
+
+MIT. Bundled dependencies keep their own licenses — see [`vendor/README.md`](vendor/README.md).
