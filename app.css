@@ -264,6 +264,16 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
 #lb.on{display:grid}
 #lb img{max-width:96vw;max-height:92vh;background:#fff;border-radius:5px;padding:14px}
 
+/* 首页的解析引擎提示 */
+.engine{font-family:var(--sans);font-size:12.5px;line-height:1.7;margin:14px auto 0;
+  max-width:620px;padding:10px 14px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--fg-soft)}
+.engine b{color:var(--fg)}
+.engine.weak{border-color:#d8b26a;background:color-mix(in srgb,#d8b26a 12%,var(--panel))}
+.engine a{cursor:pointer;text-decoration:underline}
+.fld.hilite{border:1px solid var(--accent);background:var(--accent-soft);
+  border-radius:10px;padding:12px 14px}
+
 /* 正文里的行内公式 */
 .kx{display:inline-block;vertical-align:baseline;margin:0 1px}
 .kx .katex{font-size:1.02em}

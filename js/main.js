@@ -60,7 +60,6 @@ function fillSettings() {
   $('#fOcrKey').value = cfg.ocrApiKey || '';
   $('#fOcrModel').value = cfg.ocrModel || '';
   $('#fOcrMax').value = cfg.ocrMaxCalls ?? DEFAULTS.ocrMaxCalls;
-  $('#ocrBox').open = !!cfg.ocrBaseUrl;
   store.estimateUsage().then(u => {
     store.cacheSize().then(n => {
       $('#usage').textContent = u
@@ -146,6 +145,32 @@ $('#btnClearCache').onclick = async () => {
 };
 function refreshKeyWarning() {
   $('#noKey').style.display = (cfg.apiKey && cfg.baseUrl) ? 'none' : 'block';
+  refreshEngineBar();
+}
+
+// 把"这次会用哪个引擎"摆到首页上。
+// 之前 engine:'auto' 在没配解析模型时会静默退回本地几何规则 —— 用户看到的是
+// 同样糟糕的结果，却完全不知道自己压根没跑在模型上，只会以为"还是不行"。
+function refreshEngineBar() {
+  const bar = $('#engineBar');
+  if (!bar) return;
+  const vl = cfg.engine === 'docvl' || (cfg.engine !== 'local' && docvl.configured(cfg));
+  bar.className = 'engine' + (vl ? '' : ' weak');
+  bar.innerHTML = '';
+  const line = document.createElement('div');
+  if (vl) {
+    line.innerHTML = '解析引擎：<b>模型</b>（' + (cfg.ocrModel || '') + '）'
+      + ' —— 整页交给它读，版面、双栏、表格、公式都由模型还原；插图仍按原坐标截图。'
+      + '<br>注意：每页图像会发往你配置的解析接口。';
+  } else {
+    line.innerHTML = '解析引擎：<b>本地几何规则</b>（离线、免费）。'
+      + '它看不见页面，只能从字符坐标倒推版面 —— 遇到公式多、双栏或文本层损坏的 PDF，'
+      + '正文会被整段截成图片，译文里就是一串乱码。<br>'
+      + '想要好结果，请在<a id="engineSetup">设置 → 文档解析模型</a>里填一个端点。';
+  }
+  bar.appendChild(line);
+  const go = bar.querySelector('#engineSetup');
+  if (go) go.onclick = () => { $('#bset').click(); $('#fOcrBase')?.focus(); };
 }
 
 // ---------- 首页 / 文档库 ----------

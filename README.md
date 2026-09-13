@@ -113,6 +113,21 @@ Measured on three documents, translatable characters recovered:
 | LaTeX paper (85 p) | 130,113 | 180,718 |
 | NVIDIA whitepaper (49 p) | 65,354 | — |
 | arXiv preprint (48 p) | 59,039 | 73,273 |
+| Econometrics paper, broken text layer (38 p) | 52,434 | 81,119 |
+
+
+The fourth document is the clearest case for the model engine. Its PDF stores `∂` as `@` and `≠` as `6=`, and drops Greek entirely, so the text layer of a formula-dense paragraph comes out as:
+
+```
+where the total window size,=T m+ 1;is split into a pre-break window size 1=T1 m+1
+```
+
+Translate that and you get noise. The model reads the rendered page instead:
+
+```
+where the total window size, \(\nu = T - m + 1\), is split into a pre-break window
+size \(\nu_1 = T_1 - m + 1\)
+```
 
 Parse time goes from seconds to about 40 s for 48 pages at six-way concurrency, and every page image is sent to the endpoint. That is the trade: the local engine is free, instant and offline; the model engine is none of those and reads far better.
 

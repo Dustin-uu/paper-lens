@@ -53,6 +53,7 @@
     <div class="small">支持文字版 PDF（扫描件需先 OCR）· 处理过程在本地完成</div>
     <input type="file" id="file" accept="application/pdf" hidden>
   </div>
+  <div class="engine" id="engineBar"></div>
   <div class="warn" id="noKey" style="display:none">
     还没配置模型接口。打开右上角<b>设置</b>填入 API 地址和密钥后即可开始翻译。
   </div>
@@ -133,8 +134,8 @@
         <label>目标语言</label>
         <input id="fLang" placeholder="简体中文">
       </div>
-      <details class="fld" id="ocrBox">
-        <summary>文档解析模型（可选，用于把"被截成图的正文"认回文字）</summary>
+      <div class="fld hilite" id="ocrBox">
+        <label>文档解析模型 —— 解析质量的关键</label>
         <div class="hint" style="margin-top:10px">PDF.js 只给字符和坐标，双栏页和表格区抠出来的字是左右交错的，
         翻译出来是乱码。填一个文档解析模型（如 PaddleOCR-VL），自检时会把这几块裁图发过去还原成文字。<br>
         <b>注意：启用后这些裁图会离开本机</b>，发往你填的这个地址。留空则完全不启用，解析全程在本地。<br>
@@ -147,7 +148,7 @@
           <div class="fld"><label>解析接口 Key</label><input id="fOcrKey" type="password" placeholder="留空 = 同上方 API Key"></div>
           <div class="fld"><label>单篇最多识别块数</label><input id="fOcrMax" type="number" min="0" max="400"></div>
         </div>
-      </details>
+      </div>
       <div class="fld">
         <label class="chk"><input type="checkbox" id="fAudit"> 翻译完让 AI 复核版面</label>
         <div class="hint">程序先挑出可疑的图（正文被误截成图、一张表被拆成两半、图被截断、有图注却没有图），
