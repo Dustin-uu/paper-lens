@@ -216,6 +216,56 @@ drop.addEventListener('drop', e => {
   if (f) handleFile(f);
 });
 
+// ---------- 导入精读稿 ----------
+// 应用内的自动解析（几何规则 / 整页模型）是一条路；另一条路是人读完原文后直接写出
+// 块序列和译文，用 tools/build.py 编译成 json。慢，但公式和顺序不会错。
+$('#importLink').onclick = () => $('#impFile').click();
+$('#impFile').onchange = e => { if (e.target.files[0]) importDoc(e.target.files[0]); };
+
+function dataUrlToBlob(u) {
+  const [head, b64] = String(u).split(',');
+  const type = (head.match(/data:([^;]+)/) || [, 'image/webp'])[1];
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type });
+}
+
+async function importDoc(file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (e) {
+    alert('这个文件不是合法的 JSON：' + (e.message || e));
+    return;
+  }
+  if (!data || !Array.isArray(data.blocks)) {
+    alert('缺少 blocks 字段，不是 paper-lens 的精读稿。');
+    return;
+  }
+  D.dataset.screen = 'work';
+  setWork('正在导入…', file.name, 0.5);
+  // 图片在 json 里是 dataURL，转成 Blob 再存 —— IndexedDB 里存 Blob 比字符串省三分之一
+  const blocks = data.blocks.map((b, i) => {
+    const o = { ...b, id: b.id ?? i };
+    if (o.img) { o.blob = dataUrlToBlob(o.img); delete o.img; }
+    return o;
+  });
+  const d = {
+    id: store.newId(),
+    title: data.title || file.name.replace(/\.json$/i, ''),
+    enTitle: data.enTitle || '',
+    pages: data.pages || (Math.max(0, ...blocks.map(b => b.page || 1))),
+    blocks,
+    created: data.created || Date.now(),
+    fileName: data.fileName || file.name,
+    imported: true,
+  };
+  await store.saveDoc(d);
+  setWork('导入完成', '', 1);
+  openDoc(d);
+}
+
 // ---------- 处理流程 ----------
 function setWork(stage, detail, pct) {
   $('#wkStage').textContent = stage;

@@ -271,6 +271,10 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
   border-radius:10px;padding:14px 18px;font-family:var(--sans);font-size:13px;
   line-height:1.75;color:var(--fg);box-shadow:0 10px 34px rgba(0,0,0,.16)}
 
+#home .alt{font-family:var(--sans);font-size:12.5px;color:var(--mark);
+  text-align:center;margin-top:12px}
+#home .alt a{cursor:pointer;text-decoration:underline}
+
 /* 首页的解析引擎提示 */
 .engine{font-family:var(--sans);font-size:12.5px;line-height:1.7;margin:14px auto 0;
   max-width:620px;padding:10px 14px;border-radius:9px;border:1px solid var(--line);
@@ -281,9 +285,16 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
 .fld.hilite{border:1px solid var(--accent);background:var(--accent-soft);
   border-radius:10px;padding:12px 14px}
 
+/* 行间公式（模型引擎在锚不到坐标时走这条路） */
+.mathblk{margin:26px 0;text-align:center;overflow-x:auto;overflow-y:hidden;cursor:pointer;
+  padding:4px 0;color:var(--fg)}
+.mathblk .katex-display{margin:0}
+.mathblk:hover{background:var(--accent-soft);border-radius:8px}
+
 /* 正文里的行内公式 */
 .kx{display:inline-block;vertical-align:baseline;margin:0 1px}
 .kx .katex{font-size:1.02em}
+.kx-d{display:block;margin:18px 0;text-align:center;overflow-x:auto}
 
 /* 自检结果提示 */
 #toast{position:fixed;right:20px;bottom:20px;z-index:98;max-width:400px;display:none;

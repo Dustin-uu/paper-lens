@@ -387,9 +387,12 @@ async function assemble(pages, parsed, env) {
     for (const b of blocks) {
       const asImage = (b.kind === 'math' || b.kind === 'table') && b.bbox;
       if (!asImage) {
+        // 锚不到坐标就截不了图。公式保持 math 这个 kind 交给 KaTeX 渲染
+        // （顺带也就不会被送去翻译 —— 一段纯 LaTeX 没什么好翻的）；
+        // 表格则退回普通文字，至少内容还在。
+        const kind = b.kind === 'math' ? 'math' : (b.kind === 'table' ? 'para' : b.kind);
         items.push({ y: b.bbox ? b.bbox[1] : null, blk: {
-          kind: b.kind === 'math' || b.kind === 'table' ? 'para' : b.kind,
-          text: b.text, page: pageIdx, bbox: b.bbox || undefined,
+          kind, text: b.text, page: pageIdx, bbox: b.bbox || undefined,
           size: b.size || bodySize } });
         continue;
       }

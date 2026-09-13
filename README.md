@@ -91,6 +91,20 @@ Layout parameters are exposed too, for when a PDF's typography doesn't match the
 - **Tables keep their header rows.** Rows that got classified as text are absorbed back into the table region by following ink connectivity.
 - **Running headers and footers are dropped**, and table-of-contents entries (`Introduction.........12`) are left untranslated — translating a wall of leader dots and page numbers helps nobody.
 
+### A third option: translate it yourself and import the result
+
+Both parsing engines are guessing at a page they cannot fully understand. For a paper that matters — formula-dense, or one whose PDF text layer is simply wrong — there is a slower path that has no ceiling: read the paper, write out the blocks and the translation by hand, and compile that into a document the reader imports.
+
+```bash
+python3 tools/survey.py paper.pdf                 # which pages actually contain figures
+#   ... read the PDF, write script.txt ...
+python3 tools/build.py paper.pdf script.txt doc.json
+```
+
+Then **导入已翻译文档** on the home screen. Everything else works as usual: side-by-side view, highlights, click-a-formula-to-ask, dark mode.
+
+The script is plain text — `@p` for a paragraph, `@math` for a display equation, `@fig x0,y0,x1,y1` to crop a region, `--` to separate the original from the translation. Format and conventions are in [`docs/manual-translation.md`](docs/manual-translation.md). It is designed to be written by a capable assistant reading the rendered pages, which is exactly the setup where equations come out right.
+
 ### Two parsing engines
 
 The local engine has no way to *see* the page. It gets characters and coordinates from `getTextContent()` and has to infer layout from geometry — is this font size in the body range, is the left edge at the margin, is the line spacing over the threshold. Every rule bottoms out in a numeric comparison, so a document whose proportions differ slightly loses whole pages to screenshots. Inferring semantics from geometry has a ceiling, and this project hit it.
@@ -247,6 +261,8 @@ PDF ──► parser.js ──► block sequence + cropped images
 | `js/parser.js` | PDF → layout blocks + image crops, from geometry alone (local engine) |
 | `js/parser-vl.js` | Same output, but the model reads the page and the program only crops |
 | `js/ink.js` | Ink projection: where the pixels are when the text layer can't say |
+| `tools/survey.py` | Per-page census of text blocks, vector drawings and bitmaps |
+| `tools/build.py` | Hand-written script + PDF → an importable bilingual document |
 | `js/translator.js` | Batching, concurrency, caching, graceful degradation |
 | `js/llm.js` | OpenAI-format client with streaming |
 | `js/ai.js` | Conversation state, context assembly, formula prompts |

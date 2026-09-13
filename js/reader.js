@@ -59,16 +59,18 @@ function mergeRanges(list) {
 
 // 行内公式。模型版解析引擎会把正文里的数学原样交出 LaTeX（\(...\) 或 $...$），
 // 不渲染的话读者看到的就是一串反斜杠。这里就地渲染成 KaTeX。
-const MATH_INLINE = /\\\(([^]*?)\\\)|\$([^$\n]{1,200}?)\$/g;
+// 四种写法都要认：\[..\] 与 $$..$$ 是行间，\(..\) 与 $..$ 是行内。
+// 行间公式也可能夹在段落中间（模型并不总把它单独成段），所以这里一并处理。
+const MATH_INLINE = /\\\[([^]*?)\\\]|\$\$([^]*?)\$\$|\\\(([^]*?)\\\)|\$([^$\n]{1,200}?)\$/g;
 
-function mathSpan(src, tex) {
+function mathSpan(src, tex, display) {
   const sp = document.createElement('span');
-  sp.className = 'kx';
+  sp.className = display ? 'kx kx-d' : 'kx';
   sp.dataset.len = String(src.length);     // 标注偏移按源码长度算，见 offsetIn
   const k = globalThis.katex;
   if (!k) { sp.textContent = src; return sp; }
   try {
-    k.render(tex.trim(), sp, { throwOnError: false, displayMode: false, output: 'html' });
+    k.render(tex.trim(), sp, { throwOnError: false, displayMode: !!display, output: 'html' });
   } catch { sp.textContent = src; }
   return sp;
 }
@@ -76,20 +78,37 @@ function mathSpan(src, tex) {
 // 把一段纯文本拆成「文字 / 公式」节点。没有公式时原样返回，零开销。
 function withMath(text) {
   MATH_INLINE.lastIndex = 0;
-  if (!/\\\(|\$/.test(text)) return null;
+  if (!/\\[([]|\$/.test(text)) return null;
   const frag = document.createDocumentFragment();
   let pos = 0, m, found = false;
   while ((m = MATH_INLINE.exec(text))) {
-    const tex = m[1] != null ? m[1] : m[2];
+    const display = m[1] != null || m[2] != null;
+    const tex = m[1] ?? m[2] ?? m[3] ?? m[4];
     if (tex == null || !tex.trim()) continue;
     found = true;
     if (m.index > pos) frag.appendChild(document.createTextNode(text.slice(pos, m.index)));
-    frag.appendChild(mathSpan(m[0], tex));
+    frag.appendChild(mathSpan(m[0], tex, display));
     pos = m.index + m[0].length;
   }
   if (!found) return null;
   if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
   return frag;
+}
+
+// 行间公式。模型引擎在无法锚回页面坐标时（数学密集的 PDF，文本层往往把 ∂ 存成 @、
+// 希腊字母直接丢失，锚不上很正常）会把公式原样交出 LaTeX。不渲染的话读者看到的
+// 就是满屏 \mathbf{1}_{\{t \leq T_1\}} 这种源码。
+const MATH_BLOCK = /^\s*(?:\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$)\s*$/;
+
+export function renderDisplayMath(el, text) {
+  const m = String(text).match(MATH_BLOCK);
+  const tex = m ? (m[1] != null ? m[1] : m[2]) : String(text);
+  const k = globalThis.katex;
+  el.className = 'mathblk';
+  if (!k) { el.textContent = text; return; }
+  try {
+    k.render(tex.trim(), el, { throwOnError: false, displayMode: true, output: 'html' });
+  } catch { el.textContent = text; }
 }
 
 function paintText(el, text, marks) {
@@ -219,6 +238,14 @@ export class Reader {
         fig.append(img, hint);
         fig.addEventListener('click', () => this.onFormula?.(b));
         wrap.appendChild(fig);
+      } else if (b.kind === 'math') {
+        // 拿不到坐标就截不了图，只能靠 KaTeX 把 LaTeX 渲染出来。
+        // 好处是可选中、跟随字号、深色模式也正常；代价是万一模型认错就跟着错。
+        const el = document.createElement('div');
+        el.dataset.blockId = b.id;
+        renderDisplayMath(el, b.text);
+        el.addEventListener('click', () => this.onFormula?.(b));
+        wrap.appendChild(el);
       } else if (b.kind === 'ref') {
         const el = document.createElement('div');
         el.className = 'blk ref'; el.dataset.blockId = b.id;

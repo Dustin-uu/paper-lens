@@ -53,6 +53,10 @@
     <div class="small">支持文字版 PDF（扫描件需先 OCR）· 处理过程在本地完成</div>
     <input type="file" id="file" accept="application/pdf" hidden>
   </div>
+  <div class="alt">
+    已经有精读稿？<a id="importLink">导入已翻译文档（.json）</a>
+    <input type="file" id="impFile" accept="application/json,.json" hidden>
+  </div>
   <div class="engine" id="engineBar"></div>
   <div class="warn" id="noKey" style="display:none">
     还没配置模型接口。打开右上角<b>设置</b>填入 API 地址和密钥后即可开始翻译。
