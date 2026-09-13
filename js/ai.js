@@ -37,13 +37,16 @@ export function sectionOf(blocks, index) {
 }
 
 export class Conversation {
-  constructor(cfg, { title, kind, contextText, section, imageBlob, docTitle }) {
+  constructor(cfg, { title, kind, contextText, section, imageBlob, ocrText, docTitle }) {
     this.cfg = cfg;
     this.title = title;
     this.kind = kind;                 // 'formula' | 'selection'
     this.contextText = contextText;
     this.section = section;
     this.imageBlob = imageBlob || null;
+    // 文档解析模型识别出来的结构化文本（表格行、LaTeX）。有它就一并给出去 ——
+    // 读图模型自己认表格容易串行串列，给它一份已经排好的文本要可靠得多。
+    this.ocrText = ocrText || '';
     this.docTitle = docTitle || '';
     this.messages = [];               // 展示用：{role, content}
     this._primed = false;
@@ -57,7 +60,10 @@ export class Conversation {
     ].filter(Boolean).join('\n');
 
     if (this.kind === 'formula') {
-      const text = `${head}\n\n【任务】\n图中是本文的一处公式/表格/插图。${question}`;
+      const ocr = this.ocrText
+        ? `\n\n【该图的文档解析结果，供参考，可能有个别识别错误】\n${this.ocrText.slice(0, 2500)}`
+        : '';
+      const text = `${head}\n\n【任务】\n图中是本文的一处公式/表格/插图。${question}${ocr}`;
       if (this.imageBlob && this.cfg.visionModel !== '-') {
         return [
           { type: 'text', text },
@@ -65,6 +71,9 @@ export class Conversation {
         ];
       }
       // 模型不支持读图时，退化成仅凭上下文讲解，并如实说明
+      if (this.ocrText) {
+        return `${head}\n\n【任务】\n此处原文是一个公式/表格，图片无法提供，但有文档解析结果（可能有个别识别错误）：\n${this.ocrText.slice(0, 2500)}\n\n${question}`;
+      }
       return `${head}\n\n【任务】\n此处原文是一个公式/表格（图片无法提供）。${question}\n请基于上下文推断它在表达什么；若信息不足请直言。`;
     }
     return `${head}\n\n【选中的内容】\n${this.title}\n\n【问题】\n${question}`;

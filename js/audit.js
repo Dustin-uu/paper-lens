@@ -7,6 +7,7 @@
 
 import { initPdfjs, withUnthrottledRaf } from './parser.js';
 import { chat, blobToDataUrl } from './llm.js';
+import * as docvl from './docvl.js';
 
 const INK_S = 0.5;                 // 墨迹检测分辨率（相对 72dpi），与 parser 保持一致
 const CAPTION_RE = /^(Table|Figure|Fig|Panel|Chart|Exhibit)\s*\.?\s*[A-Z]?\.?\s*\d+/i;
@@ -519,6 +520,75 @@ async function repair(doc, s, src, layout) {
   return null;
 }
 
+// ---------- 第零步：能认字的图，先交给文档解析模型 ----------
+//
+// 这一步放在最前面，因为它能把后面几步的工作量直接消掉：凡是"其实是文字却被截成图"
+// 的块，在这里就还原成文本了，轮不到后面再去问视觉模型。
+// 它也顺手解决了一个我自己修不好的问题：PDF.js 在双栏页和表格区抠出来的字是左右
+// 交错的乱码，拿去翻译只会得到垃圾。
+
+const OCR_DPI = 144;          // 实测这个分辨率够认，再高只是多花 token
+const OCR_MAX_W = 1400;
+
+async function ocrPass(doc, src, cfg, layout, hooks = {}) {
+  const { onStage, shouldStop } = hooks;
+  const out = { tried: 0, converted: 0, annotated: 0, rejected: 0, failed: 0, notes: [] };
+  if (!docvl.configured(cfg)) return out;
+
+  // 只挑"图里确实有成片文字"的块。纯插图、纯照片不送 —— 实测模型在那种图上会复读跑飞。
+  const cands = [];
+  for (const b of doc.blocks) {
+    if (b.kind !== 'graphic' || !b.bbox || !b.blob) continue;
+    const e = await src.get(b.page);
+    const ls = linesOf(itemsIn(e.items, b.bbox));
+    const txt = joinLines(ls);
+    if ((txt.match(/[A-Za-z]/g) || []).length < 60) continue;
+    // 文字行占不到区域高度一半，说明主体是图，文字只是标注
+    const inky = ls.reduce((n, l) => n + l.size * 1.2, 0);
+    cands.push({ b, txt, dense: inky >= (b.bbox[3] - b.bbox[1]) * 0.55 });
+  }
+  if (!cands.length) return out;
+
+  const cap = cfg.ocrMaxCalls ?? 60;
+  const list = cands.slice(0, cap);
+  out.tried = list.length;
+  if (cands.length > cap) out.notes.push(`超出上限，跳过 ${cands.length - cap} 块`);
+
+  let done = 0;
+  const res = await docvl.pool(list, Math.min(4, cfg.concurrency || 4), async (c) => {
+    if (shouldStop?.()) return { ok: false, why: '已停止' };
+    const e = await src.get(c.b.page);
+    const shot = await cropAt(e, c.b.bbox, OCR_DPI, src.mk, src.toBlob,
+                              'image/webp', 0.9, OCR_MAX_W);
+    const r = await docvl.recognize(cfg, shot.blob, c.txt);
+    onStage?.('ocr', ++done, list.length);
+    return r;
+  });
+
+  for (let i = 0; i < list.length; i++) {
+    const { b, dense } = list[i];
+    const r = res[i] || { why: '无结果' };
+    if (!r.text) { out.failed++; continue; }
+    // 只有三件事同时成立才敢替换截图：识别结果和原文对得上、内容是纯文字、
+    // 文字确实占满了这块区域。差一条就退回"只挂附注"。
+    // 表格和公式永远走附注这条路：公式模型会认错下标、表格丢掉底色和合并单元格，
+    // 但把识别结果挂在块上，点图问 AI 时就有结构化文本可用，比只发一张图强得多。
+    if (!r.ok || r.shape !== 'text' || !dense) {
+      b.ocr = r.text;
+      if (!r.ok) out.rejected++; else out.annotated++;
+      continue;
+    }
+    delete b.blob;
+    delete b.zh;
+    b.kind = CAPTION_RE.test(r.text) ? 'caption' : 'para';
+    b.text = r.text.replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    b.ocr = r.text;
+    out.converted++;
+    out.notes.push(`第 ${b.page + 1} 页：一段被截成图的正文已识别还原`);
+  }
+  return out;
+}
+
 // ---------- 编排 ----------
 
 const PREVIEW_DPI = 110;      // 给 AI 看的图不需要 200dpi，够看清就行
@@ -534,6 +604,11 @@ export async function auditDoc(doc, pdfBlob, cfg, layout, hooks = {}) {
 
   const src = await openSource(pdfBlob);
   try {
+    // 先让文档解析模型把"其实是文字的图"认回来。放在最前面，后面几步的活会少很多。
+    report.ocr = await ocrPass(doc, src, cfg, layout, { onStage, shouldStop });
+    for (const n of report.ocr.notes) report.fixed.push({ type: 'ocr', note: n });
+    if (shouldStop?.()) return report;
+
     let all = await scanDoc(doc, src, (i, n) => onStage?.('scan', i, n), layout);
     report.suspects = all.length;
     if (!all.length) return report;

@@ -54,6 +54,11 @@ function fillSettings() {
   $('#fLang').value = cfg.targetLang;
   $('#fAudit').checked = cfg.autoAudit !== false;
   $('#fAuditMax').value = cfg.auditMaxCalls ?? DEFAULTS.auditMaxCalls;
+  $('#fOcrBase').value = cfg.ocrBaseUrl || '';
+  $('#fOcrKey').value = cfg.ocrApiKey || '';
+  $('#fOcrModel').value = cfg.ocrModel || '';
+  $('#fOcrMax').value = cfg.ocrMaxCalls ?? DEFAULTS.ocrMaxCalls;
+  $('#ocrBox').open = !!cfg.ocrBaseUrl;
   store.estimateUsage().then(u => {
     store.cacheSize().then(n => {
       $('#usage').textContent = u
@@ -94,6 +99,10 @@ function readSettings() {
     targetLang: $('#fLang').value.trim() || '简体中文',
     autoAudit: $('#fAudit').checked,
     auditMaxCalls: Math.max(0, +$('#fAuditMax').value || DEFAULTS.auditMaxCalls),
+    ocrBaseUrl: $('#fOcrBase').value.trim(),
+    ocrApiKey: $('#fOcrKey').value.trim(),
+    ocrModel: $('#fOcrModel').value.trim(),
+    ocrMaxCalls: Math.max(0, +$('#fOcrMax').value || DEFAULTS.ocrMaxCalls),
   };
 }
 const chips = $('#presets');
@@ -246,8 +255,10 @@ async function audit(pdfBlob) {
   try {
     rep = await runAudit(doc, pdfBlob, cfg, loadLayout(), {
       onStage: (st, i, n) => setWork('AI 正在复核版面…',
-        st === 'scan' ? `扫描第 ${i} / ${n} 页` : `核查第 ${i} / ${n} 处`,
-        st === 'scan' ? (i / n) * 0.3 : 0.3 + (i / n) * 0.7),
+        st === 'ocr' ? `识别第 ${i} / ${n} 块图中的文字`
+          : st === 'scan' ? `扫描第 ${i} / ${n} 页` : `核查第 ${i} / ${n} 处`,
+        st === 'ocr' ? (i / n) * 0.4
+          : st === 'scan' ? 0.4 + (i / n) * 0.2 : 0.6 + (i / n) * 0.4),
       shouldStop: () => stopFlag,
     });
   } catch (e) {
@@ -515,7 +526,7 @@ function askFormula(block) {
     title: '公式/表格', kind: 'formula',
     contextText: contextAround(doc.blocks, idx),
     section: sectionOf(doc.blocks, idx),
-    imageBlob: block.blob, docTitle: doc.title,
+    imageBlob: block.blob, ocrText: block.ocr, docTitle: doc.title,
   });
   const sub = document.createElement('div');
   sub.className = 'subject';

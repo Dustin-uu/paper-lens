@@ -91,6 +91,37 @@ Layout parameters are exposed too, for when a PDF's typography doesn't match the
 - **Tables keep their header rows.** Rows that got classified as text are absorbed back into the table region by following ink connectivity.
 - **Running headers and footers are dropped**, and table-of-contents entries (`Introduction.........12`) are left untranslated — translating a wall of leader dots and page numbers helps nobody.
 
+### Optional: hand the hard crops to a document-parsing model
+
+`getTextContent()` gives characters and coordinates, nothing more. Inside a two-column region or a table it returns the two columns interleaved — `control how graphics are rendered andHere's a brief overview of` — and translating that produces nothing but noise. A document-parsing VLM (PaddleOCR-VL and similar) reads the crop instead and returns clean text, table rows or LaTeX.
+
+Point the **document-parsing model** settings at any OpenAI-compatible endpoint that serves one and the audit will use it. Leave it blank and nothing changes: parsing stays entirely local. **Enabling it means those crops leave your machine**, which is the one thing this project otherwise never does — so it is off by default and the setting says so plainly.
+
+What it is allowed to do is deliberately narrow. Measured on the three test documents:
+
+| | LaTeX paper | NVIDIA | arXiv |
+|---|---|---|---|
+| Crops sent | 33 | 12 | 29 |
+| Replaced the screenshot | 1 | 0 | 3 |
+| Kept as an annotation | 32 | 12 | 26 |
+| Added time | +30 s | +5 s | +25 s |
+
+Replacing a screenshot with recognised text requires all three of: the text agrees with the PDF's own text layer, the content is prose rather than a table or formula, and the text fills the region. Anything short of that is attached to the block as an annotation and the image stays exactly as it was.
+
+The annotations are where the real value turned out to be. Recall the mangled matrix at the top of this README:
+
+```
+0.2880.4130.8991.057
+```
+
+The model returns it as `\hat{\mathbf{r}}_{O}=\left[\begin{array}{l}0.288\\ 0.413\\ 0.899\\ 1.057\end{array}\right]`. That goes to the AI sidebar alongside the image, so *explain this formula* is now answered from structure rather than from pixels alone.
+
+Three limits found by testing, each enforced in code:
+
+- **Formulas come back structurally right and locally wrong.** On the paper's KKT block matrix the layout was correct but a subscript was wrong and a footnote marker was absorbed into the math. Formulas are never allowed to replace their image.
+- **Figures either vanish or explode.** A line chart came back as if it were not there; a multi-panel plot sent the model OCRing every axis label until it hit the token ceiling and started repeating itself. Output is capped and repetition is detected and discarded.
+- **Table OCR makes ordinary reading errors** — `Samsung 8nm 8N` came back as `Samsung 8 Hm 8N`. Fine as a hint for the AI, not fine as content.
+
 ### The AI proofreads the layout when translation finishes
 
 <img src="docs/screenshots/11-audit.png" width="920" alt="Audit report after translation">
@@ -177,6 +208,7 @@ PDF ──► parser.js ──► block sequence + cropped images
 | `js/ai.js` | Conversation state, context assembly, formula prompts |
 | `js/reader.js` | Rendering, TOC, selection highlighting |
 | `js/audit.js` | Post-translation layout audit — suspect filter, model judgement, repairs |
+| `js/docvl.js` | Optional document-parsing model client, with the guards that keep it honest |
 | `js/store.js` | IndexedDB — library, translation cache, original PDF |
 | `js/main.js` | State machine and interactions |
 | `js/config.js` | Defaults, provider presets, layout params, glossary |

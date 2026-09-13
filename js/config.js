@@ -14,6 +14,12 @@ export const DEFAULTS = {
   retry: 3,
   autoAudit: true,          // 翻译完让 AI 复核一遍版面（见 audit.js）
   auditMaxCalls: 40,        // 单篇最多问多少次，免得长文档把额度问光
+  // 文档解析模型（PaddleOCR-VL 这类）。填了才启用：自检时会把"疑似正文被截成图"
+  // 的那几块裁图发到这个地址，让它还原成文字。留空则完全不启用，解析仍是纯本地的。
+  ocrBaseUrl: '',
+  ocrApiKey: '',            // 留空 = 复用上面的 API Key
+  ocrModel: '',             // 例如 PaddleOCR-VL-1.6
+  ocrMaxCalls: 60,
 };
 
 // 常见服务商预设，设置面板里一键填入
