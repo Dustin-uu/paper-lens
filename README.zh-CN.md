@@ -200,6 +200,8 @@ python3 -m http.server 8080
 
 打开 <http://localhost:8080>,点右上角**设置**填入 API 地址和密钥,然后把 PDF 拖进来。
 
+> **更新代码后请强制刷新（Cmd/Ctrl+Shift+R）。** `python3 -m http.server` 不发缓存头,浏览器可能拿新的 `index.html` 配缓存里的旧 `main.js`。如果页面能打开但点什么都没反应,会有横幅直接告诉你是这个原因。
+
 > **必须通过 HTTP 打开,不能直接双击 `index.html`。** ES modules 和 pdf.js worker 在 `file://` 下会被同源策略拦住。任何静态服务器都行:`npx serve`、nginx、GitHub Pages。
 
 对接口有两个要求:

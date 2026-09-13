@@ -589,7 +589,8 @@ function askSelection(text, blockId) {
   getSelection().removeAllRanges();
 }
 
-// 启动
+// 启动。走到这里说明整个模块都求值成功了 —— index.html 里的兜底提示据此判断。
+window.__pdfbtReady = true;
 showHome();
 
 // ---------- 标注 ----------

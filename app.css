@@ -264,6 +264,13 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
 #lb.on{display:grid}
 #lb img{max-width:96vw;max-height:92vh;background:#fff;border-radius:5px;padding:14px}
 
+/* 脚本没启动时的兜底提示 */
+#bootfail{display:none}
+#bootfail.on{display:block;position:fixed;left:50%;top:24px;transform:translateX(-50%);
+  z-index:200;max-width:560px;background:var(--card);border:1px solid var(--danger);
+  border-radius:10px;padding:14px 18px;font-family:var(--sans);font-size:13px;
+  line-height:1.75;color:var(--fg);box-shadow:0 10px 34px rgba(0,0,0,.16)}
+
 /* 首页的解析引擎提示 */
 .engine{font-family:var(--sans);font-size:12.5px;line-height:1.7;margin:14px auto 0;
   max-width:620px;padding:10px 14px;border-radius:9px;border:1px solid var(--line);

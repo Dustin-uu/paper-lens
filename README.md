@@ -200,6 +200,8 @@ python3 -m http.server 8080
 
 Open <http://localhost:8080>, click **设置** (Settings), fill in your API base URL and key, then drop a PDF on the page.
 
+> **After pulling an update, hard-reload (Cmd/Ctrl+Shift+R).** `python3 -m http.server` sends no cache headers, so a browser can happily mix a new `index.html` with a cached `main.js`. If the page loads but nothing responds to clicks, a banner will tell you this is what happened.
+
 > **Serve it over HTTP — don't double-click `index.html`.** ES modules and the pdf.js worker are blocked by the same-origin policy on `file://`. Any static server works: `npx serve`, nginx, GitHub Pages.
 
 Two requirements for the API:

@@ -199,6 +199,20 @@
 
 <div id="lb"><img src="" alt=""></div>
 
+<div id="bootfail"></div>
 <script type="module" src="js/main.js"></script>
+<script>
+// 模块没跑起来时，页面看着一切正常，但什么都点不动 —— 最常见的原因是
+// git pull 之后浏览器混用了新旧文件（python -m http.server 不发 no-cache 头）。
+// 这里兜个底，把"变砖"变成一句看得懂的话。
+setTimeout(function () {
+  if (window.__pdfbtReady) return;
+  var el = document.getElementById('bootfail');
+  el.className = 'on';
+  el.innerHTML = '页面脚本没能启动，所以按钮和文件选择都不响应。<br>'
+    + '最常见的原因是浏览器缓存了旧版文件：请按 <b>Cmd/Ctrl + Shift + R</b> 强制刷新。<br>'
+    + '刷新后仍然如此的话，打开开发者工具的 Console 把第一条红色报错发出来。';
+}, 4000);
+</script>
 </body>
 </html>
