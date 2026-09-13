@@ -14,10 +14,29 @@ function slug(text, i) {
 }
 
 // 文本节点在容器内的字符偏移
+// 偏移量必须按**源文本**算，不能按屏幕上的文本算。
+// 公式被 KaTeX 渲染后，屏幕上是一堆 span，字数和源码 \(\tau\) 完全不同；
+// 若按渲染后的字数累加，标注位置会从公式那里开始整体错位。
+// 所以渲染出来的公式节点带一个 data-len 记着源码长度，遍历时按它算。
 function offsetIn(root, node, off) {
-  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   let total = 0, n;
   while ((n = w.nextNode())) {
+    if (n.nodeType === 1) {
+      if (n.dataset && n.dataset.len) {
+        if (n === node || n.contains(node)) return total;
+        total += +n.dataset.len;
+        // 跳过整棵子树
+        let skip = n, next = w.nextNode();
+        while (next && skip.contains(next)) next = w.nextNode();
+        if (!next) return -1;
+        n = next;
+        if (n.nodeType === 3 && n === node) return total + off;
+        if (n.nodeType === 3) total += n.textContent.length;
+        continue;
+      }
+      continue;
+    }
     if (n === node) return total + off;
     total += n.textContent.length;
   }
@@ -38,8 +57,47 @@ function mergeRanges(list) {
   return out;
 }
 
+// 行内公式。模型版解析引擎会把正文里的数学原样交出 LaTeX（\(...\) 或 $...$），
+// 不渲染的话读者看到的就是一串反斜杠。这里就地渲染成 KaTeX。
+const MATH_INLINE = /\\\(([^]*?)\\\)|\$([^$\n]{1,200}?)\$/g;
+
+function mathSpan(src, tex) {
+  const sp = document.createElement('span');
+  sp.className = 'kx';
+  sp.dataset.len = String(src.length);     // 标注偏移按源码长度算，见 offsetIn
+  const k = globalThis.katex;
+  if (!k) { sp.textContent = src; return sp; }
+  try {
+    k.render(tex.trim(), sp, { throwOnError: false, displayMode: false, output: 'html' });
+  } catch { sp.textContent = src; }
+  return sp;
+}
+
+// 把一段纯文本拆成「文字 / 公式」节点。没有公式时原样返回，零开销。
+function withMath(text) {
+  MATH_INLINE.lastIndex = 0;
+  if (!/\\\(|\$/.test(text)) return null;
+  const frag = document.createDocumentFragment();
+  let pos = 0, m, found = false;
+  while ((m = MATH_INLINE.exec(text))) {
+    const tex = m[1] != null ? m[1] : m[2];
+    if (tex == null || !tex.trim()) continue;
+    found = true;
+    if (m.index > pos) frag.appendChild(document.createTextNode(text.slice(pos, m.index)));
+    frag.appendChild(mathSpan(m[0], tex));
+    pos = m.index + m[0].length;
+  }
+  if (!found) return null;
+  if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
+  return frag;
+}
+
 function paintText(el, text, marks) {
-  if (!marks || !marks.length) { el.textContent = text; return; }
+  if (!marks || !marks.length) {
+    const frag = withMath(text);
+    if (frag) { el.textContent = ''; el.appendChild(frag); return; }
+    el.textContent = text; return;
+  }
   const frag = document.createDocumentFragment();
   let pos = 0;
   for (const m of mergeRanges(marks)) {
@@ -56,6 +114,19 @@ function paintText(el, text, marks) {
   if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
   el.textContent = '';
   el.appendChild(frag);
+}
+
+// 全文标题 = 前两页里字号最大的那个标题。
+// 不能用"第一个标题"：论文首页上方常有 arXiv 角标、机构、邮箱，任何一条都可能
+// 排在真标题前面，一旦选错，整个阅读器顶上就顶着一行垃圾。
+export function pickTitle(blocks) {
+  let best = null;
+  for (const b of blocks) {
+    if (b.page > 1) break;
+    if (b.kind !== 'heading' || !b.text) continue;
+    if (!best || (b.size || 0) > (best.size || 0)) best = b;
+  }
+  return best;
 }
 
 export class Reader {
@@ -112,7 +183,7 @@ export class Reader {
     wrap.appendChild(meta);
 
     let lastPage = -1, skipId = null;
-    const firstHead = doc.blocks.find(b => b.kind === 'heading');
+    const firstHead = pickTitle(doc.blocks);
     if (firstHead && level(firstHead.size || 12) === 1) skipId = firstHead.id;
 
     for (const b of doc.blocks) {

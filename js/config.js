@@ -20,6 +20,10 @@ export const DEFAULTS = {
   ocrApiKey: '',            // 留空 = 复用上面的 API Key
   ocrModel: '',             // 例如 PaddleOCR-VL-1.6
   ocrMaxCalls: 60,
+  // 解析引擎。'local' = 纯本地几何规则（离线、免费，但换排版就容易把正文截成图）；
+  // 'docvl' = 整页交给上面那个文档解析模型读，程序只负责裁像素（效果好得多，
+  // 但每页都要发出去）。配了解析模型时默认走 docvl。
+  engine: 'auto',
 };
 
 // 常见服务商预设，设置面板里一键填入

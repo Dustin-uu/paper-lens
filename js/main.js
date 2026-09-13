@@ -1,10 +1,12 @@
 // 应用入口：三个界面（首页 / 处理中 / 阅读）+ 设置 + AI 侧栏。
 import { loadSettings, saveSettings, loadLayout, saveLayout, LAYOUT, PRESETS, DEFAULTS } from './config.js';
 import { parsePdf } from './parser.js';
+import { parsePdfVL } from './parser-vl.js';
+import * as docvl from './docvl.js';
 import { translate, countPending } from './translator.js';
 import { testConnection, listModels, testVision } from './llm.js';
 import * as store from './store.js';
-import { Reader, buildToc } from './reader.js';
+import { Reader, buildToc, pickTitle } from './reader.js';
 import { Conversation, contextAround, sectionOf, PRESET_QUESTIONS } from './ai.js';
 import { runAudit, auditSummary } from './audit.js';
 
@@ -203,13 +205,18 @@ async function handleFile(file) {
   setWork('正在解析版面…', file.name, 0);
   let blocks;
   try {
-    blocks = await parsePdf(file, loadLayout(), (p, n, tail) =>
-      setWork('正在解析版面…', tail || `第 ${p} / ${n} 页`, (p / n) * 0.4));
+    const useVL = cfg.engine === 'docvl'
+      || (cfg.engine !== 'local' && docvl.configured(cfg));
+    blocks = useVL
+      ? await parsePdfVL(file, loadLayout(), cfg, (p, n, tail) =>
+          setWork('模型正在读版面…', `${tail || ''} ${p} / ${n}`.trim(), (p / n) * 0.4))
+      : await parsePdf(file, loadLayout(), (p, n, tail) =>
+          setWork('正在解析版面…', tail || `第 ${p} / ${n} 页`, (p / n) * 0.4));
   } catch (e) {
     alert('解析失败：' + (e.message || e)); showHome(); return;
   }
 
-  const enTitle = (blocks.find(b => b.kind === 'heading')?.text || file.name).replace(/\*+$/, '');
+  const enTitle = (pickTitle(blocks)?.text || file.name).replace(/\*+$/, '');
   const pages = Math.max(...blocks.map(b => b.page)) + 1;
   doc = { id: store.newId(), title: enTitle, enTitle, pages, blocks,
           created: Date.now(), fileName: file.name };
@@ -312,7 +319,8 @@ function toast(msg, details) {
 
 // ---------- 阅读 ----------
 let reader = null;
-function openDoc(d) {
+async function openDoc(d) {
+  await katexReady;
   doc = d;
   D.dataset.screen = 'read';
   $('#docTitle').textContent = d.title;
@@ -364,12 +372,15 @@ document.addEventListener('keydown', e => {
 // ---------- AI 侧栏 ----------
 // KaTeX 按需加载：它是 UMD 包，用 script 标签引，挂到 window.katex
 let katex = null;
-(function () {
+// 正文里的行内公式也要 KaTeX（模型版解析引擎会把数学原样交出 LaTeX），
+// 所以渲染阅读界面之前必须等它加载完，否则读者看到的是一串反斜杠。
+const katexReady = new Promise((resolve) => {
   const el = document.createElement('script');
   el.src = 'vendor/katex/katex.min.js';
-  el.onload = () => { katex = window.katex; };
+  el.onload = () => { katex = window.katex; resolve(true); };
+  el.onerror = () => resolve(false);
   document.head.appendChild(el);
-})();
+});
 
 // 轻量 Markdown + LaTeX。关键顺序：先把公式整段抽走再做 Markdown 转换，
 // 否则 ** 和 _ 这类规则会把 \frac{}{} \sum_{i=1}^{N} 之类的源码啃坏。

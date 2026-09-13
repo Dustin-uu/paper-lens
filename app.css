@@ -264,6 +264,10 @@ html[data-theme="dark"] .warn{background:#2a2318;border-color:#4a3c22;color:#d9b
 #lb.on{display:grid}
 #lb img{max-width:96vw;max-height:92vh;background:#fff;border-radius:5px;padding:14px}
 
+/* 正文里的行内公式 */
+.kx{display:inline-block;vertical-align:baseline;margin:0 1px}
+.kx .katex{font-size:1.02em}
+
 /* 自检结果提示 */
 #toast{position:fixed;right:20px;bottom:20px;z-index:98;max-width:400px;display:none;
   background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;

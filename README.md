@@ -91,6 +91,31 @@ Layout parameters are exposed too, for when a PDF's typography doesn't match the
 - **Tables keep their header rows.** Rows that got classified as text are absorbed back into the table region by following ink connectivity.
 - **Running headers and footers are dropped**, and table-of-contents entries (`Introduction.........12`) are left untranslated — translating a wall of leader dots and page numbers helps nobody.
 
+### Two parsing engines
+
+The local engine has no way to *see* the page. It gets characters and coordinates from `getTextContent()` and has to infer layout from geometry — is this font size in the body range, is the left edge at the margin, is the line spacing over the threshold. Every rule bottoms out in a numeric comparison, so a document whose proportions differ slightly loses whole pages to screenshots. Inferring semantics from geometry has a ceiling, and this project hit it.
+
+Configure a document-parsing model and the engine flips the division of labour:
+
+| | reads | crops |
+|---|---|---|
+| **local** | geometry rules | ink projection |
+| **docvl** | the model — text, headings, tables, reading order (two-column included), formula LaTeX | ink projection |
+
+The model is never allowed to place images. Figures are still found by ink and cropped at their original coordinates, because a model that reads a page will silently drop a line chart and will happily OCR every axis label of a multi-panel plot until it hits the token ceiling and starts repeating itself.
+
+PDF.js still matters in the model engine, for a different reason: its **positions** are exact even when its **order** is not. So positions come from PDF.js, order comes from the model, and the two are joined by matching text content — which is why two-column pages come out right.
+
+Measured on three documents, translatable characters recovered:
+
+| | local | docvl |
+|---|---|---|
+| LaTeX paper (85 p) | 130,113 | 180,718 |
+| NVIDIA whitepaper (49 p) | 65,354 | — |
+| arXiv preprint (48 p) | 59,039 | 73,273 |
+
+Parse time goes from seconds to about 40 s for 48 pages at six-way concurrency, and every page image is sent to the endpoint. That is the trade: the local engine is free, instant and offline; the model engine is none of those and reads far better.
+
 ### Optional: hand the hard crops to a document-parsing model
 
 `getTextContent()` gives characters and coordinates, nothing more. Inside a two-column region or a table it returns the two columns interleaved — `control how graphics are rendered andHere's a brief overview of` — and translating that produces nothing but noise. A document-parsing VLM (PaddleOCR-VL and similar) reads the crop instead and returns clean text, table rows or LaTeX.
@@ -202,7 +227,9 @@ PDF ──► parser.js ──► block sequence + cropped images
 
 | File | Role |
 |---|---|
-| `js/parser.js` | PDF → layout blocks + image crops. **The core.** |
+| `js/parser.js` | PDF → layout blocks + image crops, from geometry alone (local engine) |
+| `js/parser-vl.js` | Same output, but the model reads the page and the program only crops |
+| `js/ink.js` | Ink projection: where the pixels are when the text layer can't say |
 | `js/translator.js` | Batching, concurrency, caching, graceful degradation |
 | `js/llm.js` | OpenAI-format client with streaming |
 | `js/ai.js` | Conversation state, context assembly, formula prompts |
